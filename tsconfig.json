@@ -11,7 +11,7 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true
+    "exactOptionalPropertyTypes": false
   },
   "include": ["src/**/*.ts", "prisma/**/*.ts", "prisma.config.ts"],
   "exclude": [

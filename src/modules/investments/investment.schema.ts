@@ -11,9 +11,9 @@ export const platformSchema = z.object({
     "MARKETPLACE",
     "OTHER",
   ]),
-  accountReference: z.string().nullable().default(null),
-  website: z.string().url().nullable().default(null),
-  notes: z.string().nullable().default(null),
+  accountReference: z.string().optional(),
+  website: z.string().url().optional(),
+  notes: z.string().optional(),
 });
 
 export const instrumentSchema = z.object({
@@ -31,7 +31,7 @@ export const instrumentSchema = z.object({
     .min(1)
     .transform((value) => value.toUpperCase()),
   name: z.string().min(2),
-  exchange: z.string().nullable().default(null),
+  exchange: z.string().optional(),
   currency: z.string().default("IDR"),
   unitName: z.string().default("unit"),
   unitsPerLot: z.coerce.number().positive().default(1),
