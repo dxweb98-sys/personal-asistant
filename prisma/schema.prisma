@@ -118,45 +118,61 @@ enum InvestmentPlatformType {
 }
 
 model User {
-  id                  String                 @id @default(uuid()) @db.Uuid
-  name                String
-  telegramChatId      BigInt?                @unique @map("telegram_chat_id")
-  telegramUsername    String?                @map("telegram_username")
-  createdAt           DateTime               @default(now()) @map("created_at")
-  updatedAt           DateTime               @updatedAt @map("updated_at")
-  debts               Debt[]
-  accounts            FinancialAccount[]
-  categories          TransactionCategory[]
-  transactions        FinancialTransaction[]
-  instruments         InvestmentInstrument[]
-  trades              InvestmentTrade[]
-  dividends           DividendIncome[]
-  marketPrices        MarketPrice[]
-  investmentPlatforms InvestmentPlatform[]
-  financePreference   UserFinancePreference?
-  exchangeRates       ExchangeRate[]
+  id                   String                      @id @default(uuid()) @db.Uuid
+  name                 String
+  telegramChatId       BigInt?                     @unique @map("telegram_chat_id")
+  telegramUsername     String?                     @map("telegram_username")
+  createdAt            DateTime                    @default(now()) @map("created_at")
+  updatedAt            DateTime                    @updatedAt @map("updated_at")
+  debts                Debt[]
+  accounts             FinancialAccount[]
+  categories           TransactionCategory[]
+  transactions         FinancialTransaction[]
+  instruments          InvestmentInstrument[]
+  trades               InvestmentTrade[]
+  dividends            DividendIncome[]
+  marketPrices         MarketPrice[]
+  investmentPlatforms  InvestmentPlatform[]
+  financePreference    UserFinancePreference?
+  exchangeRates        ExchangeRate[]
+  auditLogs            AuditLog[]
+  transactionTemplates TransactionTemplate[]
+  fieldHistory         TransactionFieldHistory[]
+  telegramCallbacks    TelegramProcessedCallback[]
+  exportJobs           ExportJob[]
+  tags                 Tag[]
 
   @@map("users")
 }
 
 model UserFinancePreference {
-  id                         String           @id @default(uuid()) @db.Uuid
-  userId                     String           @unique @map("user_id") @db.Uuid
-  baseCurrency               String           @default("IDR") @map("base_currency")
-  priceStorageMode           PriceStorageMode @default(LATEST_ONLY) @map("price_storage_mode")
-  confirmBeforePriceRefresh  Boolean          @default(true) @map("confirm_before_price_refresh")
-  createSnapshotAfterRefresh Boolean          @default(false) @map("create_snapshot_after_refresh")
-  stockStaleHours            Int              @default(24) @map("stock_stale_hours")
-  cryptoStaleHours           Int              @default(6) @map("crypto_stale_hours")
-  goldStaleHours             Int              @default(24) @map("gold_stale_hours")
-  telegramTheme              TelegramTheme    @default(FRIENDLY) @map("telegram_theme")
-  showMotivation             Boolean          @default(true) @map("show_motivation")
-  compactNumbers             Boolean          @default(false) @map("compact_numbers")
-  fxStaleHours               Int              @default(24) @map("fx_stale_hours")
-  onboardingCompleted        Boolean          @default(false) @map("onboarding_completed")
-  createdAt                  DateTime         @default(now()) @map("created_at")
-  updatedAt                  DateTime         @updatedAt @map("updated_at")
-  user                       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                         String            @id @default(uuid()) @db.Uuid
+  userId                     String            @unique @map("user_id") @db.Uuid
+  baseCurrency               String            @default("IDR") @map("base_currency")
+  language                   String            @default("id")
+  countryCode                String            @default("ID") @map("country_code")
+  timeZone                   String            @default("Asia/Jakarta") @map("time_zone")
+  weekStartsOn               Int               @default(1) @map("week_starts_on")
+  notificationsEnabled       Boolean           @default(true) @map("notifications_enabled")
+  notificationConfig         Json?             @map("notification_config")
+  reportConfig               Json?             @map("report_config")
+  defaultAccountId           String?           @map("default_account_id") @db.Uuid
+  telegramConfigVersion      Int               @default(1) @map("telegram_config_version")
+  priceStorageMode           PriceStorageMode  @default(LATEST_ONLY) @map("price_storage_mode")
+  confirmBeforePriceRefresh  Boolean           @default(true) @map("confirm_before_price_refresh")
+  createSnapshotAfterRefresh Boolean           @default(false) @map("create_snapshot_after_refresh")
+  stockStaleHours            Int               @default(24) @map("stock_stale_hours")
+  cryptoStaleHours           Int               @default(6) @map("crypto_stale_hours")
+  goldStaleHours             Int               @default(24) @map("gold_stale_hours")
+  telegramTheme              TelegramTheme     @default(FRIENDLY) @map("telegram_theme")
+  showMotivation             Boolean           @default(true) @map("show_motivation")
+  compactNumbers             Boolean           @default(false) @map("compact_numbers")
+  fxStaleHours               Int               @default(24) @map("fx_stale_hours")
+  onboardingCompleted        Boolean           @default(false) @map("onboarding_completed")
+  createdAt                  DateTime          @default(now()) @map("created_at")
+  updatedAt                  DateTime          @updatedAt @map("updated_at")
+  user                       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultAccount             FinancialAccount? @relation("DefaultFinancialAccount", fields: [defaultAccountId], references: [id], onDelete: SetNull)
 
   @@map("user_finance_preferences")
 }
@@ -273,6 +289,9 @@ model DebtPayment {
   source         PaymentSource           @default(MANUAL)
   note           String?
   idempotencyKey String?                 @unique @map("idempotency_key")
+  status         TransactionStatus       @default(POSTED)
+  voidedAt       DateTime?               @map("voided_at")
+  voidReason     String?                 @map("void_reason")
   createdAt      DateTime                @default(now()) @map("created_at")
   debt           Debt                    @relation(fields: [debtId], references: [id], onDelete: Cascade)
   allocations    DebtPaymentAllocation[]
@@ -326,6 +345,24 @@ model DebtAdjustment {
   installment     DebtInstallment @relation(fields: [installmentId], references: [id], onDelete: Cascade)
 
   @@map("debt_adjustments")
+}
+
+enum AccountStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum TransactionStatus {
+  POSTED
+  VOIDED
+  REVERSAL
+}
+
+enum ExportJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
 }
 
 enum AccountType {
@@ -426,24 +463,33 @@ model ExchangeRate {
 }
 
 model FinancialAccount {
-  id                   String                 @id @default(uuid()) @db.Uuid
-  userId               String                 @map("user_id") @db.Uuid
-  name                 String
-  type                 AccountType
-  currency             String                 @default("IDR")
-  openingBalance       Decimal                @default(0) @map("opening_balance") @db.Decimal(24, 8)
-  currentBalance       Decimal                @default(0) @map("current_balance") @db.Decimal(24, 8)
-  isActive             Boolean                @default(true) @map("is_active")
-  createdAt            DateTime               @default(now()) @map("created_at")
-  updatedAt            DateTime               @updatedAt @map("updated_at")
-  user                 User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  outgoingTransactions FinancialTransaction[] @relation("TransactionSourceAccount")
-  incomingTransactions FinancialTransaction[] @relation("TransactionDestinationAccount")
-  trades               InvestmentTrade[]
-  dividends            DividendIncome[]
+  id                    String                  @id @default(uuid()) @db.Uuid
+  userId                String                  @map("user_id") @db.Uuid
+  name                  String
+  type                  AccountType
+  currency              String                  @default("IDR")
+  openingBalance        Decimal                 @default(0) @map("opening_balance") @db.Decimal(24, 8)
+  currentBalance        Decimal                 @default(0) @map("current_balance") @db.Decimal(24, 8)
+  isActive              Boolean                 @default(true) @map("is_active")
+  status                AccountStatus           @default(ACTIVE)
+  archivedAt            DateTime?               @map("archived_at")
+  archivedReason        String?                 @map("archived_reason")
+  isSystem              Boolean                 @default(false) @map("is_system")
+  systemCode            String?                 @map("system_code")
+  lastUsedAt            DateTime?               @map("last_used_at")
+  createdAt             DateTime                @default(now()) @map("created_at")
+  updatedAt             DateTime                @updatedAt @map("updated_at")
+  user                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  outgoingTransactions  FinancialTransaction[]  @relation("TransactionSourceAccount")
+  incomingTransactions  FinancialTransaction[]  @relation("TransactionDestinationAccount")
+  trades                InvestmentTrade[]
+  dividends             DividendIncome[]
+  defaultForPreferences UserFinancePreference[] @relation("DefaultFinancialAccount")
 
   @@unique([userId, name])
+  @@unique([userId, systemCode])
   @@index([userId, type])
+  @@index([userId, status])
   @@map("financial_accounts")
 }
 
@@ -461,27 +507,42 @@ model TransactionCategory {
 }
 
 model FinancialTransaction {
-  id                   String               @id @default(uuid()) @db.Uuid
-  userId               String               @map("user_id") @db.Uuid
+  id                   String                 @id @default(uuid()) @db.Uuid
+  userId               String                 @map("user_id") @db.Uuid
   type                 TransactionType
-  categoryId           String?              @map("category_id") @db.Uuid
-  sourceAccountId      String?              @map("source_account_id") @db.Uuid
-  destinationAccountId String?              @map("destination_account_id") @db.Uuid
-  debtId               String?              @map("debt_id") @db.Uuid
-  amount               Decimal              @db.Decimal(24, 8)
-  currency             String               @default("IDR")
-  occurredAt           DateTime             @default(now()) @map("occurred_at")
+  categoryId           String?                @map("category_id") @db.Uuid
+  sourceAccountId      String?                @map("source_account_id") @db.Uuid
+  destinationAccountId String?                @map("destination_account_id") @db.Uuid
+  debtId               String?                @map("debt_id") @db.Uuid
+  amount               Decimal                @db.Decimal(24, 8)
+  currency             String                 @default("IDR")
+  occurredAt           DateTime               @default(now()) @map("occurred_at")
   description          String?
-  referenceType        String?              @map("reference_type")
-  referenceId          String?              @map("reference_id")
-  idempotencyKey       String?              @unique @map("idempotency_key")
-  createdAt            DateTime             @default(now()) @map("created_at")
-  user                 User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  category             TransactionCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  sourceAccount        FinancialAccount?    @relation("TransactionSourceAccount", fields: [sourceAccountId], references: [id], onDelete: SetNull)
-  destinationAccount   FinancialAccount?    @relation("TransactionDestinationAccount", fields: [destinationAccountId], references: [id], onDelete: SetNull)
+  referenceType        String?                @map("reference_type")
+  referenceId          String?                @map("reference_id")
+  idempotencyKey       String?                @unique @map("idempotency_key")
+  status               TransactionStatus      @default(POSTED)
+  voidedAt             DateTime?              @map("voided_at")
+  voidReason           String?                @map("void_reason")
+  voidedBy             String?                @map("voided_by")
+  reversalOfId         String?                @unique @map("reversal_of_id") @db.Uuid
+  baseCurrency         String?                @map("base_currency")
+  fxRateToBase         Decimal?               @map("fx_rate_to_base") @db.Decimal(28, 12)
+  baseAmount           Decimal?               @map("base_amount") @db.Decimal(24, 8)
+  fxCapturedAt         DateTime?              @map("fx_captured_at")
+  metadata             Json?
+  createdAt            DateTime               @default(now()) @map("created_at")
+  updatedAt            DateTime               @updatedAt @map("updated_at")
+  user                 User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category             TransactionCategory?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  sourceAccount        FinancialAccount?      @relation("TransactionSourceAccount", fields: [sourceAccountId], references: [id], onDelete: SetNull)
+  destinationAccount   FinancialAccount?      @relation("TransactionDestinationAccount", fields: [destinationAccountId], references: [id], onDelete: SetNull)
+  reversalOf           FinancialTransaction?  @relation("TransactionReversal", fields: [reversalOfId], references: [id], onDelete: SetNull)
+  reversals            FinancialTransaction[] @relation("TransactionReversal")
+  tags                 TransactionTag[]
 
   @@index([userId, type, occurredAt])
+  @@index([userId, status, occurredAt])
   @@map("financial_transactions")
 }
 
@@ -593,4 +654,110 @@ model MarketPrice {
 
   @@index([instrumentId, capturedAt])
   @@map("market_prices")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  before     Json?
+  after      Json?
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+model TelegramProcessedCallback {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  callbackId  String   @map("callback_id")
+  action      String
+  processedAt DateTime @default(now()) @map("processed_at")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, callbackId])
+  @@index([processedAt])
+  @@map("telegram_processed_callbacks")
+}
+
+model TransactionTemplate {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  name           String
+  normalizedName String    @map("normalized_name")
+  payload        Json
+  isFavorite     Boolean   @default(false) @map("is_favorite")
+  usageCount     Int       @default(0) @map("usage_count")
+  lastUsedAt     DateTime? @map("last_used_at")
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, normalizedName])
+  @@index([userId, isFavorite, lastUsedAt])
+  @@map("transaction_templates")
+}
+
+model TransactionFieldHistory {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  fieldType       String   @map("field_type")
+  value           String
+  normalizedValue String   @map("normalized_value")
+  usageCount      Int      @default(1) @map("usage_count")
+  lastUsedAt      DateTime @default(now()) @map("last_used_at")
+  isFavorite      Boolean  @default(false) @map("is_favorite")
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fieldType, normalizedValue])
+  @@index([userId, fieldType, lastUsedAt])
+  @@map("transaction_field_history")
+}
+
+model Tag {
+  id             String           @id @default(uuid()) @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  name           String
+  normalizedName String           @map("normalized_name")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions   TransactionTag[]
+
+  @@unique([userId, normalizedName])
+  @@map("tags")
+}
+
+model TransactionTag {
+  transactionId String               @map("transaction_id") @db.Uuid
+  tagId         String               @map("tag_id") @db.Uuid
+  transaction   FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  tag           Tag                  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([transactionId, tagId])
+  @@map("transaction_tags")
+}
+
+model ExportJob {
+  id          String          @id @default(uuid()) @db.Uuid
+  userId      String          @map("user_id") @db.Uuid
+  format      String
+  kind        String
+  filters     Json
+  status      ExportJobStatus @default(PENDING)
+  fileName    String?         @map("file_name")
+  filePath    String?         @map("file_path")
+  error       String?
+  createdAt   DateTime        @default(now()) @map("created_at")
+  completedAt DateTime?       @map("completed_at")
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("export_jobs")
 }

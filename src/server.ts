@@ -5,13 +5,24 @@ import {
   startTelegramBot,
   stopTelegramBot,
 } from "./modules/telegram/telegram.v2.bot.js";
+import { migrateLegacyTelegramProfiles } from "./modules/telegram/telegram-profile-migration.service.js";
 
 const server = app.listen(env.PORT, () =>
   console.log(`Personal Finance OS API running at http://localhost:${env.PORT}`),
 );
 
-startTelegramBot().catch((error) => {
-  console.error("Failed to start Telegram bot", error);
+async function startIntegrations() {
+  const migration = await migrateLegacyTelegramProfiles();
+  if (migration.migrated || migration.skipped) {
+    console.log(
+      `Legacy Telegram profiles: ${migration.migrated} migrated, ${migration.skipped} skipped`,
+    );
+  }
+  await startTelegramBot();
+}
+
+startIntegrations().catch((error) => {
+  console.error("Failed to start integrations", error);
 });
 
 async function shutdown(signal: string) {
