@@ -2,7 +2,21 @@
 
 Personal Finance OS — Freedom Journey
 
-Express.js + TypeScript + PostgreSQL + Prisma + Telegram. Project ini mempertahankan seluruh fitur Freedom Debt dan menambahkan cash flow, akun keuangan, investasi, portfolio, net worth, serta insight.
+Express.js + TypeScript + PostgreSQL + Prisma + Telegram. Source code seluruh roadmap tetap dipertahankan, tetapi runtime saat ini difokuskan pada Utang & Kredit beserta dependency langsungnya.
+
+## Mode fokus Utang & Kredit
+
+Fitur account, saldo, mutasi, transfer, pendapatan/pengeluaran dasar, tagihan, utang, cicilan, pembayaran, simulasi, laporan/export utang, audit, settings, dan notifikasi tetap aktif.
+
+Investasi, target tabungan, budget lanjutan, wealth management, laporan umum, insight umum, dan rekomendasi lanjutan berstatus `COMING_SOON`. Endpoint yang dinonaktifkan mengembalikan HTTP `423` dengan kode `FEATURE_COMING_SOON`; callback dan command Telegram dihentikan sebelum service dipanggil.
+
+Katalog terpusat untuk navigation/route guard tersedia melalui:
+
+```text
+GET /api/v1/features
+```
+
+Item navigation yang belum aktif tetap dikirim dengan `disabled: true`, `lockIcon: "lock"`, dan badge `Segera Hadir`.
 
 ## Menjalankan
 
@@ -20,9 +34,16 @@ npm run dev
 
 - Debt: cicilan, tenor, denda fixed/harian/persentase, negosiasi, pembayaran dan export.
 - Finance: akun cash/bank/e-wallet/CC/paylater, income, expense, transfer, cash flow.
-- Investment: saham, crypto, emas, trade, harga terbaru, dividen, portfolio performance.
-- Insight: assets, liabilities, net worth, cash flow dan insight berbasis aturan.
-- Telegram: debt commands, `/cashflow`, `/portfolio`, dan export.
+- Investment: source dipertahankan, runtime dikunci sebagai `COMING_SOON`.
+- Insight umum: source dipertahankan, runtime dikunci sebagai `COMING_SOON`.
+- Telegram: cash flow, account, transaksi dasar, debt, dan settings aktif; investment tetap terlihat dengan icon lock dan badge Segera Hadir.
+
+Endpoint simulasi kredit aktif:
+
+```text
+POST /api/v1/debts/simulations
+POST /api/v1/debts/simulations/urgent-override
+```
 
 Dokumentasi lengkap: `docs/API-CONTRACT.md` dan `docs/PERSONAL-FINANCE-API.md`.
 

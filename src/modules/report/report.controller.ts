@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { asyncHandler } from "../../common/async-handler.js";
+import { Feature } from "../../config/features.js";
 import { getUserId } from "../../common/user-context.js";
+import { requireFeature } from "../../middlewares/feature.middleware.js";
 import { recommendationSchema } from "../recommendations/recommendation.schema.js";
 import { buildRecommendation } from "../recommendations/recommendation.service.js";
 import { getSummary } from "../summary/summary.service.js";
@@ -32,6 +34,7 @@ function normalizeReportQuery(query: Record<string, unknown>) {
 
 reportRouter.get(
   "/summary",
+  requireFeature(Feature.DEBT_REPORTS),
   asyncHandler(async (req, res) => {
     res.json({ success: true, data: await getSummary(getUserId(req)) });
   }),
@@ -39,6 +42,7 @@ reportRouter.get(
 
 reportRouter.get(
   "/financial",
+  requireFeature(Feature.GENERAL_REPORTS),
   asyncHandler(async (req, res) => {
     const query = reportQuerySchema.parse(normalizeReportQuery(req.query));
     res.json({
@@ -50,6 +54,7 @@ reportRouter.get(
 
 reportRouter.post(
   "/financial",
+  requireFeature(Feature.GENERAL_REPORTS),
   asyncHandler(async (req, res) => {
     const query = reportQuerySchema.parse(req.body);
     res.json({
@@ -61,6 +66,7 @@ reportRouter.post(
 
 reportRouter.post(
   "/recommendations",
+  requireFeature(Feature.RECOMMENDATIONS),
   asyncHandler(async (req, res) => {
     const input = recommendationSchema.parse(req.body);
     res.json({

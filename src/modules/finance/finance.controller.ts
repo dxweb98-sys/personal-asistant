@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../../common/async-handler.js";
+import { Feature } from "../../config/features.js";
 import { getUserId } from "../../common/user-context.js";
+import { assertFeatureActive } from "../../middlewares/feature.middleware.js";
 import {
   accountArchiveSchema,
   accountSchema,
@@ -21,15 +23,16 @@ export const financeRouter = Router();
 
 financeRouter.post(
   "/accounts",
-  asyncHandler(async (req, res) =>
+  asyncHandler(async (req, res) => {
+    const input = accountSchema.parse(req.body);
+    if (input.type === "INVESTMENT") {
+      assertFeatureActive(Feature.INVESTMENTS);
+    }
     res.status(201).json({
       success: true,
-      data: await financeService.createAccount(
-        getUserId(req),
-        accountSchema.parse(req.body),
-      ),
-    }),
-  ),
+      data: await financeService.createAccount(getUserId(req), input),
+    });
+  }),
 );
 
 financeRouter.get(
@@ -89,15 +92,20 @@ financeRouter.post(
 
 financeRouter.post(
   "/categories",
-  asyncHandler(async (req, res) =>
+  asyncHandler(async (req, res) => {
+    const input = categorySchema.parse(req.body);
+    if (
+      ["INVESTMENT_BUY", "INVESTMENT_SELL", "DIVIDEND"].includes(
+        input.transactionType,
+      )
+    ) {
+      assertFeatureActive(Feature.INVESTMENTS);
+    }
     res.status(201).json({
       success: true,
-      data: await financeService.createCategory(
-        getUserId(req),
-        categorySchema.parse(req.body),
-      ),
-    }),
-  ),
+      data: await financeService.createCategory(getUserId(req), input),
+    });
+  }),
 );
 
 financeRouter.post(

@@ -11,6 +11,11 @@ import { progress } from "./telegram.format.js";
 import { upsertExchangeRate } from "../../common/fx.js";
 import { getTelegramTheme, listTelegramThemes } from "./themes/index.js";
 import { fxProviderService } from "../settings/fx-provider.service.js";
+import { Feature, isFeatureActive } from "../../config/features.js";
+import {
+  requiredFeatureForTelegramInput,
+  telegramComingSoonMessage,
+} from "./telegram-feature-access.js";
 
 let bot: Telegraf | null = null;
 
@@ -210,6 +215,9 @@ async function userFor(ctx: any) {
 
 const homeKeyboard = (themeKey = "FRIENDLY") => {
   const t = getTelegramTheme(themeKey);
+  const investmentLabel = isFeatureActive(Feature.INVESTMENTS)
+    ? t.labels.portfolio
+    : "🔒 Investasi • Segera Hadir";
   return Markup.inlineKeyboard([
     [
       Markup.button.callback(t.labels.expense, "flow:expense"),
@@ -217,7 +225,7 @@ const homeKeyboard = (themeKey = "FRIENDLY") => {
     ],
     [
       Markup.button.callback(t.labels.dashboard, "menu:dashboard"),
-      Markup.button.callback(t.labels.portfolio, "menu:portfolio"),
+      Markup.button.callback(investmentLabel, "menu:portfolio"),
     ],
     [
       Markup.button.callback(t.labels.debt, "menu:debt"),
@@ -249,7 +257,7 @@ async function sendWelcome(ctx: any) {
 
 Halo, <b>${html(user.name)}</b>!
 
-Bot ini membantu mencatat pemasukan, pengeluaran, utang, investasi, platform, harga aset, kurs, dan perjalanan menuju financial freedom.
+Bot ini membantu mencatat pemasukan, pengeluaran, account, tagihan, dan utang. Investasi tetap tersedia di roadmap dengan status Segera Hadir.
 
 Semua konfigurasi awal dilakukan langsung melalui Telegram.`,
     {
@@ -395,12 +403,14 @@ async function sendDashboard(ctx: any) {
       new Date(new Date().getFullYear(), new Date().getMonth(), 1),
       new Date(),
     ),
-    investmentService.portfolio(u.id),
+    isFeatureActive(Feature.INVESTMENTS)
+      ? investmentService.portfolio(u.id)
+      : Promise.resolve(null),
     debtService.list(u.id),
     financeService.listAccounts(u.id),
   ]);
 
-  const displayCurrency = (p as any).displayCurrency ?? "IDR";
+  const displayCurrency = p?.displayCurrency ?? cf.currency ?? "IDR";
   const liquid = accounts
     .filter((a: any) => ["CASH", "BANK", "E_WALLET"].includes(a.type))
     .filter((a: any) => a.currency === displayCurrency)
@@ -411,23 +421,30 @@ async function sendDashboard(ctx: any) {
       (sum: number, debt: any) => sum + Number(debt.remainingPrincipal),
       0,
     );
-  const confirmedNetWorth =
-    liquid + Number((p as any).confirmedMarketValue) - liability;
-  const estimatedNetWorth =
-    confirmedNetWorth + Number((p as any).estimatedMarketValue);
+  const confirmedInvestment = Number(p?.confirmedMarketValue ?? 0);
+  const estimatedInvestment = Number(p?.estimatedMarketValue ?? 0);
+  const confirmedNetWorth = liquid + confirmedInvestment - liability;
+  const estimatedNetWorth = confirmedNetWorth + estimatedInvestment;
   const savingsRate =
     cf.income > 0
       ? ((cf.income - cf.expense - cf.debtPayment) / cf.income) * 100
       : 0;
 
-  const text = `🧭 <b>FINANCIAL SNAPSHOT</b>
+  const investmentSummary = p
+    ? `📈 Investasi terkonfirmasi: <b>${html(currency(confirmedInvestment, displayCurrency))}</b>\n`
+    : "🔒 Investasi: <b>Segera Hadir</b>\n";
+  const estimatedSummary = p
+    ? `🔭 Estimasi termasuk harga stale: <b>${html(currency(estimatedNetWorth, displayCurrency))}</b>\n`
+    : "";
+
+  const text = `🧭 <b>RINGKASAN UTANG &amp; ARUS KAS</b>
 
 💵 Aset likuid terkonfirmasi: <b>${html(currency(liquid, displayCurrency))}</b>
-📈 Investasi terkonfirmasi: <b>${html(currency(Number((p as any).confirmedMarketValue), displayCurrency))}</b>
 💳 Kewajiban terkonfirmasi: <b>${html(currency(liability, displayCurrency))}</b>
+${investmentSummary}
 
 🧮 Net worth terkonfirmasi: <b>${html(currency(confirmedNetWorth, displayCurrency))}</b>
-🔭 Estimasi termasuk harga stale: <b>${html(currency(estimatedNetWorth, displayCurrency))}</b>
+${estimatedSummary}
 
 📥 Income: ${html(currency(cf.income, displayCurrency))}
 📤 Expense: ${html(currency(cf.expense, displayCurrency))}
@@ -445,21 +462,29 @@ async function sendSettings(ctx: any) {
   const profile = await getTelegramProfile(ctx.chat.id);
   const selectedCountry = profile?.country ?? "ID";
   const selectedLanguage = profile?.language ?? "id";
+  const investmentSettings = isFeatureActive(Feature.INVESTMENTS)
+    ? `💾 Penyimpanan harga: <b>${html(p.priceStorageMode)}</b>
+❓ Konfirmasi sebelum update: <b>${p.confirmBeforePriceRefresh ? "Aktif" : "Nonaktif"}</b>
+📸 Snapshot setelah update: <b>${p.createSnapshotAfterRefresh ? "Aktif" : "Nonaktif"}</b>
+
+Batas harga stale:
+📈 Saham ${p.stockStaleHours} jam
+🪙 Crypto ${p.cryptoStaleHours} jam
+🥇 Emas ${p.goldStaleHours} jam`
+    : "🔒 Investasi dan pengaturan harga: <b>Segera Hadir</b>";
+  const lockedPrefix = isFeatureActive(Feature.INVESTMENTS) ? "" : "🔒 ";
+  const comingSoonSuffix = isFeatureActive(Feature.INVESTMENTS)
+    ? ""
+    : " • Segera Hadir";
   const text = `⚙️ <b>PENGATURAN PERSONAL</b>
 
 🌍 Negara: <b>${html(countryName[selectedCountry])}</b>
 🗣 Bahasa: <b>${html(languageName[selectedLanguage])}</b>
 💱 Mata uang tampilan: <b>${html(p.baseCurrency)}</b>
-💾 Penyimpanan harga: <b>${html(p.priceStorageMode)}</b>
-❓ Konfirmasi sebelum update: <b>${p.confirmBeforePriceRefresh ? "Aktif" : "Nonaktif"}</b>
-📸 Snapshot setelah update: <b>${p.createSnapshotAfterRefresh ? "Aktif" : "Nonaktif"}</b>
 🎨 Tema bot: <b>${html(p.telegramTheme)}</b>
 ✨ Motivasi: <b>${p.showMotivation ? "Aktif" : "Nonaktif"}</b>
 
-Batas harga stale:
-📈 Saham ${p.stockStaleHours} jam
-🪙 Crypto ${p.cryptoStaleHours} jam
-🥇 Emas ${p.goldStaleHours} jam`;
+${investmentSettings}`;
   await ctx.reply(text, {
     parse_mode: "HTML",
     ...Markup.inlineKeyboard([
@@ -476,16 +501,28 @@ Batas harga stale:
         Markup.button.callback("📋 Kurs Tersimpan", "fx:list"),
       ],
       [
-        Markup.button.callback("💾 Mode Harga", "settings:storage"),
-        Markup.button.callback("❓ Konfirmasi", "settings:confirm"),
+        Markup.button.callback(
+          `${lockedPrefix}Mode Harga${comingSoonSuffix}`,
+          "settings:storage",
+        ),
+        Markup.button.callback(
+          `${lockedPrefix}Konfirmasi Harga${comingSoonSuffix}`,
+          "settings:confirm",
+        ),
       ],
       [
-        Markup.button.callback("📸 Snapshot", "settings:snapshot"),
+        Markup.button.callback(
+          `${lockedPrefix}Snapshot${comingSoonSuffix}`,
+          "settings:snapshot",
+        ),
         Markup.button.callback("✨ Motivasi", "settings:motivation"),
       ],
       [
         Markup.button.callback("🎨 Tema", "settings:theme"),
-        Markup.button.callback("⏱ Batas Stale", "settings:stale"),
+        Markup.button.callback(
+          `${lockedPrefix}Batas Stale${comingSoonSuffix}`,
+          "settings:stale",
+        ),
       ],
       [Markup.button.callback("🏠 Beranda", "menu:home")],
     ]),
@@ -513,6 +550,30 @@ async function sendDebts(ctx: any) {
 export async function startTelegramBot() {
   if (!env.TELEGRAM_ENABLED || !env.TELEGRAM_BOT_TOKEN) return;
   bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
+
+  bot.use(async (ctx, next) => {
+    const callbackData =
+      ctx.callbackQuery && "data" in ctx.callbackQuery
+        ? ctx.callbackQuery.data
+        : undefined;
+    const messageText =
+      ctx.message && "text" in ctx.message ? ctx.message.text : undefined;
+    const requiredFeature = requiredFeatureForTelegramInput({
+      callbackData,
+      messageText,
+    });
+    if (!requiredFeature || isFeatureActive(requiredFeature)) {
+      await next();
+      return;
+    }
+    if (ctx.callbackQuery) {
+      await ctx.answerCbQuery("🔒 Segera Hadir").catch(() => undefined);
+    }
+    await ctx.reply(telegramComingSoonMessage(requiredFeature), {
+      parse_mode: "HTML",
+      ...backHome(),
+    });
+  });
 
   bot.start(async (ctx: any) => {
     const u = await userFor(ctx);
@@ -643,7 +704,7 @@ export async function startTelegramBot() {
 
       await ctx.answerCbQuery("Konfigurasi selesai");
       await ctx.reply(
-        `${langText(language).completed}\n\n🌍 ${html(countryName[country])}\n🗣 ${html(languageName[language])}\n💱 ${html(selectedCurrency)}\n🎨 ${html(getTelegramTheme(theme).name)}\n\nHarga investasi tidak diperbarui otomatis. Gunakan tombol Update Harga saat diperlukan.`,
+        `${langText(language).completed}\n\n🌍 ${html(countryName[country])}\n🗣 ${html(languageName[language])}\n💱 ${html(selectedCurrency)}\n🎨 ${html(getTelegramTheme(theme).name)}\n\nSaat ini bot difokuskan pada Utang &amp; Kredit. Fitur investasi tetap terlihat sebagai roadmap dan berstatus Segera Hadir.`,
         { parse_mode: "HTML" },
       );
       await sendHome(ctx);
@@ -697,7 +758,7 @@ export async function startTelegramBot() {
   bot.action("menu:help", async (ctx: any) => {
     await ctx.answerCbQuery();
     await ctx.reply(
-      "Gunakan tombol menu untuk mencatat income, expense, melihat portfolio, utang, dan pengaturan. Command cepat: /menu, /portfolio, /cashflow, /settings.",
+      "Gunakan tombol menu untuk mencatat pendapatan, pengeluaran, account, utang, dan pengaturan. Command cepat: /menu, /cashflow, /settings. 🔒 Investasi berstatus Segera Hadir.",
       { ...backHome() },
     );
   });

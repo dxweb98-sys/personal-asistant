@@ -164,7 +164,7 @@ Pre-existing issues outside the changed scope are recorded rather than silently 
 
 ## Feature-flag baseline
 
-There is no central feature-flag registry shared by backend and Telegram yet. The first implementation must introduce a minimal source of truth with active Debt & Credit prerequisites and `COMING_SOON` values for unrelated roadmap modules. Disabled backend endpoints must be rejected, not merely hidden from menus.
+The baseline did not have a central feature-flag registry. The current focus implementation now uses one source of truth for backend guards, navigation metadata, and Telegram access. Debt & Credit prerequisites are `ACTIVE`; unrelated roadmap modules are `COMING_SOON`, remain visible with lock metadata, and are rejected before their service handlers run.
 
 ## Stage order
 

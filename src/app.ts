@@ -10,6 +10,9 @@ import { investmentRouter } from "./modules/investments/investment.controller.js
 import { insightRouter } from "./modules/insights/insight.controller.js";
 import { settingsRouter } from "./modules/settings/settings.controller.js";
 import { auditRouter } from "./modules/audit/audit.controller.js";
+import { featureRouter } from "./modules/features/feature.controller.js";
+import { Feature } from "./config/features.js";
+import { requireFeature } from "./middlewares/feature.middleware.js";
 import { errorMiddleware } from "./middlewares/error.middleware.js";
 
 export const app = express();
@@ -37,14 +40,27 @@ app.use(morgan("combined"));
 app.get("/health", (_req, res) =>
   res.json({ success: true, service: "personal-finance-os" }),
 );
-app.use("/api/v1/debts", debtRouter);
+app.use("/api/v1/features", featureRouter);
+app.use("/api/v1/debts", requireFeature(Feature.DEBTS), debtRouter);
 app.use("/api/v1/reports", reportRouter);
 app.use("/api/v1/exports", exportRouter);
-app.use("/api/v1/finance", financeRouter);
-app.use("/api/v1/investments", investmentRouter);
-app.use("/api/v1/insights", insightRouter);
-app.use("/api/v1/settings", settingsRouter);
-app.use("/api/v1/audit", auditRouter);
+app.use("/api/v1/finance", requireFeature(Feature.ACCOUNTS), financeRouter);
+app.use(
+  "/api/v1/investments",
+  requireFeature(Feature.INVESTMENTS),
+  investmentRouter,
+);
+app.use(
+  "/api/v1/insights",
+  requireFeature(Feature.WEALTH_MANAGEMENT),
+  insightRouter,
+);
+app.use(
+  "/api/v1/settings",
+  requireFeature(Feature.SETTINGS),
+  settingsRouter,
+);
+app.use("/api/v1/audit", requireFeature(Feature.AUDIT), auditRouter);
 app.use((_req, res) =>
   res.status(404).json({ success: false, message: "Route not found" }),
 );

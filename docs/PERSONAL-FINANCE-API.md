@@ -1,5 +1,7 @@
 # Personal Finance OS — API Guide
 
+> Runtime saat ini berada pada mode fokus Utang & Kredit. Endpoint investasi dan insight umum di bawah tetap didokumentasikan untuk roadmap, tetapi diblokir dengan HTTP `423 FEATURE_COMING_SOON`. Status fitur dan navigation dapat dibaca dari `GET /api/v1/features`.
+
 Semua endpoint development memakai header `x-user-id`.
 
 ## 1. Membuat akun keuangan
@@ -16,6 +18,8 @@ Semua endpoint development memakai header `x-user-id`.
 ```
 
 Jenis akun: `CASH`, `BANK`, `E_WALLET`, `CREDIT_CARD`, `PAYLATER`, `CRYPTO_WALLET`, `INVESTMENT`, `OTHER`.
+
+Pada mode fokus saat ini, pembuatan account bertipe `INVESTMENT` ditolak dengan `423 FEATURE_COMING_SOON`; tipe lain tetap tersedia untuk alur account dan Utang & Kredit.
 
 ## 2. Mencatat gaji atau pendapatan bisnis
 

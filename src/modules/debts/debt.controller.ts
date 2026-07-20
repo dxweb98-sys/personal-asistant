@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { DebtStatus } from "../../generated/prisma/client.js";
 import { asyncHandler } from "../../common/async-handler.js";
+import { Feature } from "../../config/features.js";
 import { getUserId } from "../../common/user-context.js";
+import { requireFeature } from "../../middlewares/feature.middleware.js";
 import {
   adjustmentSchema,
   chargeSchema,
@@ -12,6 +14,14 @@ import {
   planLateSchema,
   updateDebtSchema,
 } from "./debt.schema.js";
+import {
+  debtSimulationSchema,
+  urgentOverrideSchema,
+} from "./debt-simulation.schema.js";
+import {
+  applyUrgentOverride,
+  simulateNewDebt,
+} from "./debt-simulation.service.js";
 import { debtService } from "./debt.service.js";
 export const debtRouter = Router();
 debtRouter.get(
@@ -39,6 +49,28 @@ debtRouter.post(
           createDebtSchema.parse(req.body),
         ),
       }),
+  ),
+);
+debtRouter.post(
+  "/simulations",
+  requireFeature(Feature.CREDIT_SIMULATION),
+  asyncHandler(async (req, res) =>
+    res.json({
+      success: true,
+      message: "Simulasi kredit berhasil dihitung",
+      data: simulateNewDebt(debtSimulationSchema.parse(req.body)),
+    }),
+  ),
+);
+debtRouter.post(
+  "/simulations/urgent-override",
+  requireFeature(Feature.CREDIT_SIMULATION),
+  asyncHandler(async (req, res) =>
+    res.json({
+      success: true,
+      message: "Urgent override berhasil dievaluasi",
+      data: applyUrgentOverride(urgentOverrideSchema.parse(req.body)),
+    }),
   ),
 );
 debtRouter.get(
@@ -73,6 +105,7 @@ debtRouter.delete(
 );
 debtRouter.post(
   "/:id/installments",
+  requireFeature(Feature.INSTALLMENTS),
   asyncHandler(async (req, res) =>
     res
       .status(201)
@@ -89,6 +122,7 @@ debtRouter.post(
 );
 debtRouter.post(
   "/:id/installments/:installmentId/plan-late",
+  requireFeature(Feature.INSTALLMENTS),
   asyncHandler(async (req, res) =>
     res.json({
       success: true,
@@ -104,6 +138,7 @@ debtRouter.post(
 );
 debtRouter.post(
   "/:id/installments/:installmentId/adjustments",
+  requireFeature(Feature.INSTALLMENTS),
   asyncHandler(async (req, res) =>
     res
       .status(201)
@@ -121,6 +156,7 @@ debtRouter.post(
 );
 debtRouter.post(
   "/:id/charges",
+  requireFeature(Feature.BILLS),
   asyncHandler(async (req, res) =>
     res
       .status(201)
@@ -153,6 +189,7 @@ debtRouter.post(
 );
 debtRouter.post(
   "/:id/payments",
+  requireFeature(Feature.DEBT_PAYMENTS),
   asyncHandler(async (req, res) =>
     res
       .status(201)
