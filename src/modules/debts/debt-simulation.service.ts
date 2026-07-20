@@ -213,6 +213,7 @@ function buildStressTests(params: {
   const mandatory = params.input.mandatoryExpenses ?? 0;
   const routine = params.input.routineNeeds ?? 0;
   const monthlySavings = params.input.minimumMonthlySavings ?? 0;
+  const safetyBuffer = params.input.safetyBuffer ?? 0;
   const make = (
     scenario: StressTestResult["scenario"],
     label: string,
@@ -224,7 +225,9 @@ function buildStressTests(params: {
     explanation: string,
   ): StressTestResult => {
     const obligations = mandatoryExpenses + routine + activeDebtService + installment;
-    const remainingCashFlow = roundMoney(income - obligations - monthlySavings);
+    const remainingCashFlow = roundMoney(
+      income - obligations - monthlySavings - safetyBuffer,
+    );
     return {
       scenario,
       label,
@@ -423,7 +426,15 @@ function findSafePurchaseMonth(input: DebtSimulationInput, comparison: TenorSimu
     const overdue = activeDebts.some((debt) => ["PARTIAL", "OVERDUE"].includes(debt.status) && ["MANDATORY", "URGENT"].includes(debt.priority));
     const projectedSavings = roundMoney(savings.usableSavings + monthlySavingsGrowth * month);
     const dsr = roundMoney((monthlyDebt + comparison.monthlyInstallment) / fixedIncome * 100);
-    const freeCash = roundMoney(fixedIncome - (input.mandatoryExpenses ?? 0) - (input.routineNeeds ?? 0) - monthlyDebt - comparison.monthlyInstallment - monthlySavingsGrowth);
+    const freeCash = roundMoney(
+      fixedIncome -
+        (input.mandatoryExpenses ?? 0) -
+        (input.routineNeeds ?? 0) -
+        monthlyDebt -
+        comparison.monthlyInstallment -
+        monthlySavingsGrowth -
+        (input.safetyBuffer ?? 0),
+    );
     const savingsAfterDp = projectedSavings - input.plan.downPayment - fees;
     const obligations = (input.mandatoryExpenses ?? 0) + (input.routineNeeds ?? 0) + monthlyDebt + comparison.monthlyInstallment;
     const buffer = obligations > 0 ? savingsAfterDp / obligations : 0;
@@ -456,11 +467,25 @@ export function simulateNewDebt(input: DebtSimulationInput): DebtSimulationResul
   const activeDebt = calculateActiveDebtCommitments(input.activeDebts);
   const fixedIncome = income.total;
   const currentDsr = fixedIncome > 0 ? roundMoney(activeDebt.monthlyDebtService / fixedIncome * 100) : null;
-  const freeCashFlowBefore = input.mandatoryExpenses === undefined || fixedIncome <= 0
-    ? null
-    : roundMoney(fixedIncome - input.mandatoryExpenses - (input.routineNeeds ?? 0) - activeDebt.monthlyDebtService - (input.minimumMonthlySavings ?? 0));
-  const dsrCapacity = fixedIncome > 0 ? roundMoney(fixedIncome * thresholds.healthyMaxDsr / 100 - activeDebt.monthlyDebtService) : null;
-  const cashCapacity = freeCashFlowBefore === null ? null : roundMoney(freeCashFlowBefore - (input.safetyBuffer ?? 0));
+  const freeCashFlowBefore =
+    input.mandatoryExpenses === undefined || fixedIncome <= 0
+      ? null
+      : roundMoney(
+          fixedIncome -
+            input.mandatoryExpenses -
+            (input.routineNeeds ?? 0) -
+            activeDebt.monthlyDebtService -
+            (input.minimumMonthlySavings ?? 0) -
+            (input.safetyBuffer ?? 0),
+        );
+  const dsrCapacity =
+    fixedIncome > 0
+      ? roundMoney(
+          (fixedIncome * thresholds.healthyMaxDsr) / 100 -
+            activeDebt.monthlyDebtService,
+        )
+      : null;
+  const cashCapacity = freeCashFlowBefore;
   const maximumNewInstallment = dsrCapacity === null || cashCapacity === null ? null : roundMoney(Math.max(0, Math.min(dsrCapacity, cashCapacity)));
   const tenorComparisons = [...new Set(input.plan.tenors)].sort((a, b) => a - b).map((tenor) => buildTenorResult({ input, tenor, fixedIncome, activeDebt, savings, currentDsr, freeCashFlowBefore, maximumNewInstallment, thresholds }));
   const recommended = recommendTenor(tenorComparisons, input.plan.cashPriceOrLoanAmount);

@@ -266,14 +266,16 @@ describe("simulasi utang baru", () => {
     const input = baseInput();
     input.plan.tenors = [24];
     input.plan.providerMonthlyPayments = { 24: 1_000_000 };
-    input.savingsAccounts[0]!.balance = 80_000_000;
+    // Buffer belum aman selama cicilan kendaraan masih aktif,
+    // tetapi menjadi aman setelah kewajiban tersebut selesai.
+    input.savingsAccounts[0]!.balance = 44_000_000;
     input.minimumMonthlySavings = 1_000_000;
     const result = simulateNewDebt(input);
     expect(result.safePurchaseProjection.found).toBe(true);
     expect(result.safePurchaseProjection.earliestSafeMonth).not.toBeNull();
     expect(
       result.safePurchaseProjection.earliestSafeMonth!.getTime(),
-    ).toBeGreaterThanOrEqual(new Date("2026-11-20T00:00:00.000Z").getTime());
+    ).toBeGreaterThan(new Date("2026-11-20T00:00:00.000Z").getTime());
   });
 });
 

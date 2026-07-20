@@ -129,19 +129,22 @@ export function generateDebtSchedule(
   const warnings: string[] = [];
   let estimated = false;
   let flatInterest = 0;
+  let flatInterestTotal = 0;
 
   if (input.interestMethod === "FLAT") {
     if ((input.annualInterestRate ?? 0) > 0) {
-      flatInterest = roundMoney(principal * monthlyRate);
+      flatInterestTotal = roundMoney(principal * monthlyRate * tenor);
+      flatInterest = roundMoney(flatInterestTotal / tenor);
     } else if ((input.contractBaseInstallment ?? 0) > 0) {
-      flatInterest = roundMoney(
+      flatInterestTotal = roundMoney(
         Math.max(
           0,
           input.contractBaseInstallment! * tenor -
             principal -
             monthlyFees * tenor,
-        ) / tenor,
+        ),
       );
+      flatInterest = roundMoney(flatInterestTotal / tenor);
       estimated = true;
       warnings.push(
         "Bunga flat diestimasi dari cicilan tetap karena suku bunga tidak tersedia",
@@ -155,12 +158,13 @@ export function generateDebtSchedule(
         "contractBaseInstallment wajib diisi untuk MANUAL_CONTRACT",
       );
     }
-    flatInterest = roundMoney(
+    flatInterestTotal = roundMoney(
       Math.max(
         0,
         input.contractBaseInstallment * tenor - principal - monthlyFees * tenor,
-      ) / tenor,
+      ),
     );
+    flatInterest = roundMoney(flatInterestTotal / tenor);
     estimated = true;
     warnings.push(
       "Pokok dan bunga dipisahkan sebagai estimasi dari total pembayaran kontrak",
@@ -211,6 +215,27 @@ export function generateDebtSchedule(
       estimated,
     });
     openingPrincipal = closingPrincipal;
+  }
+
+  if (
+    ["FLAT", "MANUAL_CONTRACT"].includes(input.interestMethod) &&
+    installments.length > 0
+  ) {
+    const allocatedInterest = roundMoney(
+      installments.reduce((sum, row) => sum + row.interest, 0),
+    );
+    const roundingAdjustment = roundMoney(
+      flatInterestTotal - allocatedInterest,
+    );
+    if (roundingAdjustment !== 0) {
+      const lastInstallment = installments.at(-1)!;
+      lastInstallment.interest = roundMoney(
+        lastInstallment.interest + roundingAdjustment,
+      );
+      lastInstallment.baseInstallment = roundMoney(
+        lastInstallment.baseInstallment + roundingAdjustment,
+      );
+    }
   }
 
   if (
