@@ -50,13 +50,29 @@ const debtBaseSchema = z.object({
   name: z.string().min(2),
   creditor: z.string().min(2),
   description: z.string().optional(),
+  kind: z
+    .enum([
+      "CASH_LOAN",
+      "VEHICLE_FINANCING",
+      "GOODS_CREDIT",
+      "CREDIT_CARD",
+      "PAYLATER",
+      "HOME_FINANCING",
+      "FAMILY_FRIEND",
+      "OTHER",
+    ])
+    .default("OTHER"),
   originalPrincipal: money.positive(),
   remainingPrincipal: money.optional(),
+  alreadyPaidAmount: money.default(0),
   paymentPolicy: z.enum(["FIXED", "FLEXIBLE", "NEGOTIABLE"]),
   fixedMonthlyAmount: money.default(0),
   minimumMonthlyAmount: money.default(0),
   targetMonthlyAmount: money.default(0),
   interestRateAnnual: money.default(0),
+  interestMethod: z
+    .enum(["NONE", "FLAT", "EFFECTIVE", "ANNUITY", "MANUAL_CONTRACT"])
+    .optional(),
   startDate: optionalDate,
   maturityDate: optionalDate,
   dueDay: z.coerce.number().int().min(1).max(31).optional(),
@@ -104,6 +120,48 @@ const validateDebt = (v: PartialDebtInput, ctx: z.RefinementCtx) => {
       message: "dueDay wajib jika generateInstallments=true",
       path: ["dueDay"],
     });
+  if (
+    v.generateInstallments === true &&
+    v.paymentPolicy === "FIXED" &&
+    v.tenorMonths &&
+    Number(v.fixedMonthlyAmount ?? 0) * v.tenorMonths <
+      Number(v.originalPrincipal ?? 0)
+  )
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "Total cicilan tetap tidak boleh lebih kecil dari pokok pinjaman",
+      path: ["fixedMonthlyAmount"],
+    });
+  if (
+    Number(v.alreadyPaidAmount ?? 0) > 0 &&
+    v.remainingPrincipal !== undefined
+  )
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "Gunakan alreadyPaidAmount atau remainingPrincipal, jangan keduanya",
+      path: ["alreadyPaidAmount"],
+    });
+  if (
+    Number(v.alreadyPaidAmount ?? 0) > 0 &&
+    v.generateInstallments !== true
+  )
+    ctx.addIssue({
+      code: "custom",
+      message: "alreadyPaidAmount membutuhkan jadwal cicilan",
+      path: ["alreadyPaidAmount"],
+    });
+  if (
+    v.generateInstallments === true &&
+    v.interestMethod === "MANUAL_CONTRACT" &&
+    Number(v.fixedMonthlyAmount ?? 0) <= 0
+  )
+    ctx.addIssue({
+      code: "custom",
+      message: "fixedMonthlyAmount wajib untuk MANUAL_CONTRACT",
+      path: ["fixedMonthlyAmount"],
+    });
 };
 
 export const createDebtSchema = debtBaseSchema.superRefine(validateDebt);
@@ -126,6 +184,7 @@ export const paymentSchema = z.object({
   note: z.string().optional(),
   idempotencyKey: z.string().min(8).optional(),
   installmentId: z.string().uuid().optional(),
+  sourceAccountId: z.string().uuid(),
 });
 export const chargeSchema = z.object({
   type: z.enum(["LATE_FEE", "INTEREST", "ADMIN_FEE", "OTHER"]),

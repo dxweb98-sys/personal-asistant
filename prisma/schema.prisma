@@ -24,6 +24,26 @@ enum DebtPriority {
   SLOW
 }
 
+enum DebtKind {
+  CASH_LOAN
+  VEHICLE_FINANCING
+  GOODS_CREDIT
+  CREDIT_CARD
+  PAYLATER
+  HOME_FINANCING
+  FAMILY_FRIEND
+  OTHER
+}
+
+enum DebtInterestMethod {
+  NONE
+  FLAT
+  EFFECTIVE
+  ANNUITY
+  MANUAL_CONTRACT
+  MANUAL_SCHEDULE
+}
+
 enum PaymentPolicy {
   FIXED
   FLEXIBLE
@@ -169,6 +189,9 @@ model UserFinancePreference {
   compactNumbers             Boolean           @default(false) @map("compact_numbers")
   fxStaleHours               Int               @default(24) @map("fx_stale_hours")
   onboardingCompleted        Boolean           @default(false) @map("onboarding_completed")
+  fixedMonthlyIncome         Decimal           @default(0) @map("fixed_monthly_income") @db.Decimal(19, 2)
+  mandatoryMonthlyExpenses   Decimal           @default(0) @map("mandatory_monthly_expenses") @db.Decimal(19, 2)
+  debtSafetyBuffer           Decimal           @default(0) @map("debt_safety_buffer") @db.Decimal(19, 2)
   createdAt                  DateTime          @default(now()) @map("created_at")
   updatedAt                  DateTime          @updatedAt @map("updated_at")
   user                       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -183,6 +206,7 @@ model Debt {
   name                 String
   creditor             String
   description          String?
+  kind                 DebtKind                @default(OTHER)
   originalPrincipal    Decimal                 @map("original_principal") @db.Decimal(19, 2)
   currency             String                  @default("IDR")
   remainingPrincipal   Decimal                 @map("remaining_principal") @db.Decimal(19, 2)
@@ -191,6 +215,8 @@ model Debt {
   minimumMonthlyAmount Decimal                 @default(0) @map("minimum_monthly_amount") @db.Decimal(19, 2)
   targetMonthlyAmount  Decimal                 @default(0) @map("target_monthly_amount") @db.Decimal(19, 2)
   interestRateAnnual   Decimal                 @default(0) @map("interest_rate_annual") @db.Decimal(7, 4)
+  interestMethod       DebtInterestMethod      @default(NONE) @map("interest_method")
+  totalContractAmount  Decimal?                @map("total_contract_amount") @db.Decimal(19, 2)
   startDate            DateTime?               @map("start_date") @db.Date
   maturityDate         DateTime?               @map("maturity_date") @db.Date
   dueDay               Int?                    @map("due_day")
@@ -284,6 +310,7 @@ model DebtCharge {
 model DebtPayment {
   id             String                  @id @default(uuid()) @db.Uuid
   debtId         String                  @map("debt_id") @db.Uuid
+  sourceAccountId String?                @map("source_account_id") @db.Uuid
   amount         Decimal                 @db.Decimal(19, 2)
   paidAt         DateTime                @default(now()) @map("paid_at")
   source         PaymentSource           @default(MANUAL)
@@ -294,9 +321,11 @@ model DebtPayment {
   voidReason     String?                 @map("void_reason")
   createdAt      DateTime                @default(now()) @map("created_at")
   debt           Debt                    @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  sourceAccount  FinancialAccount?       @relation("DebtPaymentSourceAccount", fields: [sourceAccountId], references: [id], onDelete: SetNull)
   allocations    DebtPaymentAllocation[]
 
   @@index([debtId, paidAt])
+  @@index([sourceAccountId])
   @@map("debt_payments")
 }
 
@@ -485,6 +514,7 @@ model FinancialAccount {
   trades                InvestmentTrade[]
   dividends             DividendIncome[]
   defaultForPreferences UserFinancePreference[] @relation("DefaultFinancialAccount")
+  debtPayments          DebtPayment[]            @relation("DebtPaymentSourceAccount")
 
   @@unique([userId, name])
   @@unique([userId, systemCode])

@@ -35,6 +35,26 @@ export const telegramDebtDetailAction = new RegExp(
   "i",
 );
 
+export const telegramDebtInstallmentPaymentAction = new RegExp(
+  `^debtpay:i:(${telegramUuid})$`,
+  "i",
+);
+
+export const telegramDebtBankPaymentAction = new RegExp(
+  `^debtpay:b:(${telegramUuid})$`,
+  "i",
+);
+
+export const telegramDebtScheduleAction = new RegExp(
+  `^debt:s:(${telegramUuid})$`,
+  "i",
+);
+
+export const telegramDebtHistoryAction = new RegExp(
+  `^debt:h:(${telegramUuid})$`,
+  "i",
+);
+
 export type TelegramFeatureInput = Readonly<{
   callbackData?: string;
   messageText?: string;

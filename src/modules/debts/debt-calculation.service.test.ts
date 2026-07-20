@@ -76,6 +76,22 @@ describe("generateDebtSchedule", () => {
     expect(result.estimated).toBe(true);
     expect(result.totalInterest).toBe(20_000_000);
   });
+
+  it("memisahkan pokok 14 juta dari kontrak 1,5 juta selama 12 bulan", () => {
+    const result = generateDebtSchedule({
+      principal: 14_000_000,
+      tenorMonths: 12,
+      firstDueDate: new Date("2026-08-20T00:00:00.000Z"),
+      interestMethod: "MANUAL_CONTRACT",
+      contractBaseInstallment: 1_500_000,
+    });
+
+    expect(result.totalPrincipal).toBe(14_000_000);
+    expect(result.totalContractPayment).toBe(18_000_000);
+    expect(result.totalInterest).toBe(4_000_000);
+    expect(result.averageMonthlyInterest).toBe(333_333.33);
+    expect(result.installments[0]?.baseInstallment).toBeCloseTo(1_500_000, 0);
+  });
 });
 
 describe("calculatePenalty", () => {

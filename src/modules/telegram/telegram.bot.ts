@@ -4,6 +4,8 @@ import { Markup, Telegraf } from "telegraf";
 import { env } from "../../config/env.js";
 import { prisma } from "../../lib/prisma.js";
 import { debtService } from "../debts/debt.service.js";
+import { debtOverviewService } from "../debts/debt-overview.service.js";
+import { debtPaymentService } from "../debts/debt-payment.service.js";
 import { financeService } from "../finance/finance.service.js";
 import { investmentService } from "../investments/investment.service.js";
 import { settingsService } from "../settings/settings.service.js";
@@ -15,8 +17,12 @@ import { Feature, isFeatureActive } from "../../config/features.js";
 import {
   requiredFeatureForTelegramInput,
   telegramComingSoonMessage,
+  telegramDebtBankPaymentAction,
   telegramDebtDetailAction,
+  telegramDebtHistoryAction,
+  telegramDebtInstallmentPaymentAction,
   telegramDebtPaymentAction,
+  telegramDebtScheduleAction,
 } from "./telegram-feature-access.js";
 
 let bot: Telegraf | null = null;
@@ -42,6 +48,16 @@ type TelegramProfile = {
 };
 
 type OnboardingDraft = Partial<TelegramProfile>;
+
+type DebtPaymentDraft = {
+  debtId: string;
+  debtName: string;
+  installmentId: string;
+  period: string;
+  amount: number;
+  currency: string;
+  paidAt: Date;
+};
 
 const wizard = new Map<number, Wizard>();
 const onboardingDraft = new Map<number, OnboardingDraft>();
@@ -168,7 +184,27 @@ type Wizard =
       accountId: string;
       accountName: string;
     }
-  | { kind: "PAY_DEBT"; debtId: string; debtName: string }
+  | {
+      kind: "PAY_DEBT_AMOUNT";
+      debtId: string;
+      debtName: string;
+      installmentId: string;
+      period: string;
+      suggestedAmount: number;
+      currency: string;
+    }
+  | ({ kind: "PAY_DEBT_DATE" } & Omit<DebtPaymentDraft, "paidAt">)
+  | ({ kind: "PAY_DEBT_CUSTOM_DATE" } & Omit<DebtPaymentDraft, "paidAt">)
+  | ({ kind: "PAY_DEBT_BANK" } & DebtPaymentDraft)
+  | ({
+      kind: "PAY_DEBT_CONFIRM";
+      accountId: string;
+      accountName: string;
+      accountBalance: number;
+    } & DebtPaymentDraft)
+  | { kind: "DEBT_HEALTH_INCOME" }
+  | { kind: "DEBT_HEALTH_EXPENSES"; income: number }
+  | { kind: "DEBT_HEALTH_BUFFER"; income: number; expenses: number }
   | { kind: "FX_RATE"; baseCurrency: string; quoteCurrency: string };
 
 const currency = (n: number, code = "IDR") => {
@@ -547,6 +583,169 @@ async function sendDebts(ctx: any) {
       : "🎉 Belum ada utang aktif.",
     { parse_mode: "HTML", ...Markup.inlineKeyboard(rows) },
   );
+}
+
+const debtKindLabel: Record<string, string> = {
+  CASH_LOAN: "Pinjaman tunai",
+  VEHICLE_FINANCING: "Kredit kendaraan",
+  GOODS_CREDIT: "Kredit barang",
+  CREDIT_CARD: "Kartu kredit",
+  PAYLATER: "Paylater",
+  HOME_FINANCING: "Kredit rumah",
+  FAMILY_FRIEND: "Keluarga/teman",
+  OTHER: "Lainnya",
+};
+
+const healthAppearance: Record<string, { icon: string; label: string }> = {
+  HEALTHY: { icon: "🟢", label: "SEHAT" },
+  NEEDS_ATTENTION: { icon: "🟡", label: "PERLU PERHATIAN" },
+  UNHEALTHY: { icon: "🟠", label: "MENCEKIK" },
+  CRITICAL: { icon: "🔴", label: "KRITIS" },
+  INSUFFICIENT_DATA: { icon: "⚪", label: "DATA BELUM CUKUP" },
+};
+
+function debtDate(value: Date | string) {
+  return new Intl.DateTimeFormat("id-ID", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Jakarta",
+  }).format(new Date(value));
+}
+
+async function sendDebtDetail(ctx: any, userId: string, debtId: string) {
+  const overview: any = await debtOverviewService.get(userId, debtId);
+  const { debt, contract, nextInstallment, affordability, health } = overview;
+  const healthView =
+    healthAppearance[health.status] ?? healthAppearance.INSUFFICIENT_DATA!;
+  const nextBill = nextInstallment
+    ? `\n\n🧾 <b>TAGIHAN BERIKUTNYA</b>\n📆 ${html(nextInstallment.period)} • jatuh tempo ${html(debtDate(nextInstallment.dueDate))}\nPokok ${html(currency(nextInstallment.outstandingPrincipal, debt.currency))} + biaya/bunga/denda ${html(currency(nextInstallment.outstandingCharges, debt.currency))}\nTotal perlu dibayar: <b>${html(currency(nextInstallment.totalOutstanding, debt.currency))}</b>`
+    : "\n\n🎉 Tidak ada tagihan cicilan yang tersisa.";
+  const ratio =
+    health.debtServiceRatio === null
+      ? "belum dapat dihitung"
+      : `${health.debtServiceRatio}% dari pendapatan tetap`;
+  const capacity =
+    health.status === "INSUFFICIENT_DATA"
+      ? "lengkapi data kemampuan bayar"
+      : currency(affordability.paymentCapacity, debt.currency);
+  const reasons = health.reasons
+    .slice(0, 3)
+    .map((reason: string) => `• ${html(reason)}`)
+    .join("\n");
+  const estimated = contract.estimated ? " <i>(estimasi kontrak)</i>" : "";
+  const penaltyLine =
+    contract.totalPenalty > 0
+      ? `\nDenda tercatat: ${html(currency(contract.totalPenalty, debt.currency))} • tersisa ${html(currency(contract.outstandingPenalty, debt.currency))}`
+      : "";
+
+  await ctx.reply(
+    `💳 <b>${html(debt.name)}</b>\n🏢 ${html(debt.creditor)} • ${html(debtKindLabel[debt.kind] ?? debt.kind)}\n🚩 Urgensi: <b>${html(debt.priority)}</b>\n📌 Status: <b>${html(debt.currentStatus)}</b>\n\n💰 <b>RINGKASAN KONTRAK</b>${estimated}\nPokok awal: ${html(currency(contract.originalPrincipal, debt.currency))}\nTotal kontrak: <b>${html(currency(contract.totalContractPayment, debt.currency))}</b>\nMetode bunga: ${html(debt.interestMethod)}${Number(debt.interestRateAnnual) > 0 ? ` • ${html(Number(debt.interestRateAnnual))}%/tahun` : ""}\nTotal bunga: <b>${html(currency(contract.totalInterest, debt.currency))}</b>\nRata-rata bunga/bulan: ${html(currency(contract.averageMonthlyInterest, debt.currency))}\nBunga terhadap pokok: ${html(contract.effectiveContractInterestPercent)}%${penaltyLine}\n\n📈 Terbayar: <b>${html(currency(contract.totalPaid, debt.currency))}</b> (${html(contract.progressPercent)}%)\n${html(progress(contract.totalPaid, contract.totalContractPayment))}\nSisa pokok: ${html(currency(Number(debt.remainingPrincipal), debt.currency))}\nSisa pembayaran kontrak: ${html(currency(contract.remainingContractPayment, debt.currency))}${nextBill}\n\n${healthView.icon} <b>KONDISI: ${healthView.label}</b>\nRasio seluruh cicilan: ${html(ratio)}\nRekomendasi bayar/bulan: <b>${html(currency(affordability.recommendedMonthlyPayment, debt.currency))}</b>\nSisa kemampuan bulanan: <b>${html(capacity)}</b>\n${reasons}`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("💸 Bayar Tagihan", `debt:pay:${debt.id}`)],
+        [
+          Markup.button.callback("🗓 Jadwal", `debt:s:${debt.id}`),
+          Markup.button.callback("🧾 Riwayat", `debt:h:${debt.id}`),
+        ],
+        [
+          Markup.button.callback(
+            "🧮 Atur Kemampuan Bayar",
+            "debt:health:setup",
+          ),
+        ],
+        [
+          Markup.button.callback("⬅️ Daftar Utang", "menu:debt"),
+          Markup.button.callback("🏠 Beranda", "menu:home"),
+        ],
+      ]),
+    },
+  );
+}
+
+async function sendDebtInstallmentChoices(
+  ctx: any,
+  userId: string,
+  debtId: string,
+) {
+  const overview: any = await debtOverviewService.get(userId, debtId);
+  const outstanding = overview.installments.filter(
+    (installment: any) => installment.totalOutstanding > 0,
+  );
+  if (!outstanding.length) {
+    await ctx.reply("🎉 Tidak ada tagihan yang masih harus dibayar.");
+    return;
+  }
+  const visible = outstanding.slice(0, 12);
+  await ctx.reply(
+    `Pilih tagihan <b>${html(overview.debt.name)}</b>. Tagihan yang sama dapat dibayar beberapa kali sampai lunas:${outstanding.length > visible.length ? "\n\nMenampilkan 12 tagihan terdekat." : ""}`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        ...visible.map((installment: any) => [
+          Markup.button.callback(
+            `${installment.period} • ${currency(installment.totalOutstanding, overview.debt.currency)}`,
+            `debtpay:i:${installment.id}`,
+          ),
+        ]),
+        [Markup.button.callback("❌ Batal", "debtpay:cancel")],
+      ]),
+    },
+  );
+}
+
+async function askDebtPaymentDate(
+  ctx: any,
+  state: Omit<DebtPaymentDraft, "paidAt">,
+) {
+  wizard.set(ctx.chat!.id, { kind: "PAY_DEBT_DATE", ...state });
+  await ctx.reply(
+    `Nominal: <b>${html(currency(state.amount, state.currency))}</b>\nKapan pembayaran dilakukan?`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("Hari ini", "debtpay:date:today"),
+          Markup.button.callback("Tanggal lain", "debtpay:date:custom"),
+        ],
+        [Markup.button.callback("❌ Batal", "debtpay:cancel")],
+      ]),
+    },
+  );
+}
+
+async function sendDebtPaymentBanks(ctx: any, state: DebtPaymentDraft) {
+  const user = await userFor(ctx);
+  const accounts: any[] = await prisma.financialAccount.findMany({
+    where: {
+      userId: user.id,
+      type: "BANK",
+      currency: state.currency,
+      isActive: true,
+      status: "ACTIVE",
+    },
+    orderBy: { name: "asc" },
+  });
+  if (!accounts.length) {
+    await ctx.reply(
+      `Belum ada rekening bank aktif dengan mata uang ${html(state.currency)}. Tambahkan rekening lebih dulu melalui menu Account.`,
+      { parse_mode: "HTML", ...backHome() },
+    );
+    return;
+  }
+  wizard.set(ctx.chat!.id, { kind: "PAY_DEBT_BANK", ...state });
+  await ctx.reply("Pilih rekening bank sumber pembayaran:", {
+    ...Markup.inlineKeyboard([
+      ...accounts.map((account: any) => [
+        Markup.button.callback(
+          `${account.name} • ${currency(Number(account.currentBalance), account.currency)}`,
+          `debtpay:b:${account.id}`,
+        ),
+      ]),
+      [Markup.button.callback("❌ Batal", "debtpay:cancel")],
+    ]),
+  });
 }
 
 export async function startTelegramBot() {
@@ -1222,33 +1421,247 @@ Mata uang yang umum digunakan adalah ${countryCurrency[country]}. Kamu dapat men
   bot.action(telegramDebtPaymentAction, async (ctx: any) => {
     await ctx.answerCbQuery();
     const u = await userFor(ctx);
-    const d: any = await debtService.find(u.id, ctx.match[1]);
+    await sendDebtInstallmentChoices(ctx, u.id, ctx.match[1]);
+  });
+  bot.action(telegramDebtInstallmentPaymentAction, async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const u = await userFor(ctx);
+    const installment: any = await prisma.debtInstallment.findFirst({
+      where: { id: ctx.match[1], debt: { userId: u.id } },
+      include: { debt: true },
+    });
+    if (!installment) return ctx.reply("Tagihan tidak ditemukan.");
+    const overview: any = await debtOverviewService.get(
+      u.id,
+      installment.debtId,
+    );
+    const bill = overview.installments.find(
+      (item: any) => item.id === installment.id,
+    );
+    if (!bill || bill.totalOutstanding <= 0) {
+      return ctx.reply("Tagihan ini sudah lunas.");
+    }
     wizard.set(ctx.chat!.id, {
-      kind: "PAY_DEBT",
-      debtId: d.id,
-      debtName: d.name,
+      kind: "PAY_DEBT_AMOUNT",
+      debtId: installment.debtId,
+      debtName: installment.debt.name,
+      installmentId: installment.id,
+      period: installment.period,
+      suggestedAmount: bill.totalOutstanding,
+      currency: installment.debt.currency,
     });
     await ctx.reply(
-      `Masukkan nominal pembayaran untuk <b>${html(d.name)}</b>:`,
+      `🧾 Tagihan <b>${html(installment.period)}</b>\nTotal tersisa: <b>${html(currency(bill.totalOutstanding, installment.debt.currency))}</b>\n\nKetik nominal yang ingin dibayar. Pembayaran parsial boleh dilakukan beberapa kali.`,
       {
         parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback(
+              `Bayar penuh ${currency(bill.totalOutstanding, installment.debt.currency)}`,
+              "debtpay:full",
+            ),
+          ],
+          [Markup.button.callback("❌ Batal", "debtpay:cancel")],
+        ]),
       },
     );
+  });
+  bot.action("debtpay:full", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const state = wizard.get(ctx.chat!.id);
+    if (!state || state.kind !== "PAY_DEBT_AMOUNT") {
+      return ctx.reply("Sesi pembayaran sudah berakhir. Silakan mulai lagi.");
+    }
+    await askDebtPaymentDate(ctx, {
+      debtId: state.debtId,
+      debtName: state.debtName,
+      installmentId: state.installmentId,
+      period: state.period,
+      amount: state.suggestedAmount,
+      currency: state.currency,
+    });
+  });
+  bot.action("debtpay:date:today", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const state = wizard.get(ctx.chat!.id);
+    if (!state || state.kind !== "PAY_DEBT_DATE") {
+      return ctx.reply("Sesi pembayaran sudah berakhir. Silakan mulai lagi.");
+    }
+    const { kind: _kind, ...draft } = state;
+    await sendDebtPaymentBanks(ctx, { ...draft, paidAt: new Date() });
+  });
+  bot.action("debtpay:date:custom", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const state = wizard.get(ctx.chat!.id);
+    if (!state || state.kind !== "PAY_DEBT_DATE") {
+      return ctx.reply("Sesi pembayaran sudah berakhir. Silakan mulai lagi.");
+    }
+    const { kind: _kind, ...draft } = state;
+    wizard.set(ctx.chat!.id, { kind: "PAY_DEBT_CUSTOM_DATE", ...draft });
+    await ctx.reply("Ketik tanggal pembayaran dengan format YYYY-MM-DD.");
+  });
+  bot.action(telegramDebtBankPaymentAction, async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const state = wizard.get(ctx.chat!.id);
+    if (!state || state.kind !== "PAY_DEBT_BANK") {
+      return ctx.reply("Sesi pembayaran sudah berakhir. Silakan mulai lagi.");
+    }
+    const u = await userFor(ctx);
+    const account: any = await prisma.financialAccount.findFirst({
+      where: {
+        id: ctx.match[1],
+        userId: u.id,
+        type: "BANK",
+        currency: state.currency,
+        isActive: true,
+        status: "ACTIVE",
+      },
+    });
+    if (!account) return ctx.reply("Rekening bank tidak ditemukan.");
+    if (Number(account.currentBalance) < state.amount) {
+      return ctx.reply(
+        `Saldo ${html(account.name)} tidak cukup. Tersedia ${html(currency(Number(account.currentBalance), account.currency))}.`,
+        { parse_mode: "HTML" },
+      );
+    }
+    const { kind: _kind, ...draft } = state;
+    wizard.set(ctx.chat!.id, {
+      kind: "PAY_DEBT_CONFIRM",
+      ...draft,
+      accountId: account.id,
+      accountName: account.name,
+      accountBalance: Number(account.currentBalance),
+    });
+    await ctx.reply(
+      `🔎 <b>KONFIRMASI PEMBAYARAN</b>\n\nUtang: <b>${html(state.debtName)}</b>\nTagihan: ${html(state.period)}\nNominal: <b>${html(currency(state.amount, state.currency))}</b>\nTanggal bayar: ${html(debtDate(state.paidAt))}\nSumber: <b>${html(account.name)}</b>\nSaldo setelah bayar: <b>${html(currency(Number(account.currentBalance) - state.amount, account.currency))}</b>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("✅ Konfirmasi", "debtpay:confirm")],
+          [Markup.button.callback("❌ Batal", "debtpay:cancel")],
+        ]),
+      },
+    );
+  });
+  bot.action("debtpay:confirm", async (ctx: any) => {
+    await ctx.answerCbQuery("Memproses pembayaran...");
+    const state = wizard.get(ctx.chat!.id);
+    if (!state || state.kind !== "PAY_DEBT_CONFIRM") {
+      return ctx.reply("Sesi pembayaran sudah berakhir. Silakan mulai lagi.");
+    }
+    try {
+      const u = await userFor(ctx);
+      const result: any = await debtPaymentService.payFromBank(
+        u.id,
+        state.debtId,
+        {
+          amount: state.amount,
+          paidAt: state.paidAt,
+          source: "TELEGRAM",
+          note: `Pembayaran tagihan ${state.period} via Telegram`,
+          installmentId: state.installmentId,
+          sourceAccountId: state.accountId,
+          idempotencyKey: `tg-${ctx.chat!.id}-${ctx.callbackQuery.id}`,
+        },
+      );
+      wizard.delete(ctx.chat!.id);
+      await ctx.reply(
+        `✅ Pembayaran <b>${html(currency(state.amount, state.currency))}</b> untuk <b>${html(state.debtName)}</b> tercatat.\n🏦 Sisa saldo ${html(state.accountName)}: <b>${html(currency(Number(result.sourceAccount.currentBalance), state.currency))}</b>\n📉 Sisa pokok utang: <b>${html(currency(Number(result.debt.remainingPrincipal), state.currency))}</b>`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback(
+                "Lihat Detail Utang",
+                `debt:${state.debtId}`,
+              ),
+            ],
+            [Markup.button.callback("🏠 Beranda", "menu:home")],
+          ]),
+        },
+      );
+    } catch (error: any) {
+      await ctx.reply(`❌ Pembayaran gagal: ${html(error.message)}`, {
+        parse_mode: "HTML",
+      });
+    }
+  });
+  bot.action("debtpay:cancel", async (ctx: any) => {
+    wizard.delete(ctx.chat!.id);
+    await ctx.answerCbQuery("Pembayaran dibatalkan");
+    await ctx.reply("Pembayaran dibatalkan.", { ...backHome() });
   });
   bot.action(telegramDebtDetailAction, async (ctx: any) => {
     await ctx.answerCbQuery();
     const u = await userFor(ctx);
-    const d: any = await debtService.find(u.id, ctx.match[1]);
-    const paid = Number(d.originalPrincipal) - Number(d.remainingPrincipal);
+    await sendDebtDetail(ctx, u.id, ctx.match[1]);
+  });
+  bot.action(telegramDebtScheduleAction, async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const u = await userFor(ctx);
+    const overview: any = await debtOverviewService.get(u.id, ctx.match[1]);
+    const currentIndex = overview.installments.findIndex(
+      (installment: any) => installment.totalOutstanding > 0,
+    );
+    const startIndex =
+      currentIndex < 0
+        ? Math.max(0, overview.installments.length - 12)
+        : Math.max(0, currentIndex - 1);
+    const visible = overview.installments.slice(startIndex, startIndex + 12);
+    const lines = visible.map((installment: any) => {
+      const icon = ["PAID", "PAID_LATE"].includes(installment.currentStatus)
+        ? "✅"
+        : ["PARTIAL", "OVERDUE"].includes(installment.currentStatus)
+          ? "🟠"
+          : "⚪";
+      return `${icon} <b>${html(installment.period)}</b> • ${html(installment.currentStatus)}\n   Jatuh tempo ${html(debtDate(installment.dueDate))} • sisa ${html(currency(installment.totalOutstanding, overview.debt.currency))}\n   Pokok ${html(currency(installment.scheduledPrincipal, overview.debt.currency))} + bunga ${html(currency(installment.interest, overview.debt.currency))}${installment.penalty > 0 ? ` + denda ${html(currency(installment.penalty, overview.debt.currency))}` : ""}`;
+    });
     await ctx.reply(
-      `💳 <b>${html(d.name)}</b>\n\n🏢 ${html(d.creditor)}\n📉 Sisa: <b>${html(currency(Number(d.remainingPrincipal), d.currency ?? "IDR"))}</b>\n${html(progress(paid, Number(d.originalPrincipal)))}\n🏷️ ${html(d.status)}`,
+      `🗓 <b>JADWAL ${html(overview.debt.name)}</b>\n\n${lines.length ? lines.join("\n\n") : "Belum ada jadwal cicilan."}${overview.installments.length > visible.length ? "\n\n<i>Menampilkan 12 periode di sekitar tagihan aktif.</i>" : ""}`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([
-          [Markup.button.callback("💸 Catat Pembayaran", `debt:pay:${d.id}`)],
-          [Markup.button.callback("🏠 Beranda", "menu:home")],
+          [
+            Markup.button.callback(
+              "⬅️ Kembali ke Detail",
+              `debt:${overview.debt.id}`,
+            ),
+          ],
         ]),
       },
+    );
+  });
+  bot.action(telegramDebtHistoryAction, async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const u = await userFor(ctx);
+    const debt: any = await debtService.find(u.id, ctx.match[1]);
+    const payments = debt.payments
+      .filter((payment: any) => payment.status === "POSTED")
+      .slice(0, 12);
+    const lines = payments.map(
+      (payment: any) =>
+        `✅ ${html(debtDate(payment.paidAt))} • <b>${html(currency(Number(payment.amount), debt.currency))}</b>\n   ${html(payment.sourceAccount?.name ?? payment.source)}${payment.note ? ` • ${html(payment.note)}` : ""}`,
+    );
+    await ctx.reply(
+      `🧾 <b>RIWAYAT PEMBAYARAN ${html(debt.name)}</b>\n\n${lines.length ? lines.join("\n\n") : "Belum ada pembayaran."}`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback(
+              "⬅️ Kembali ke Detail",
+              `debt:${debt.id}`,
+            ),
+          ],
+        ]),
+      },
+    );
+  });
+  bot.action("debt:health:setup", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    wizard.set(ctx.chat!.id, { kind: "DEBT_HEALTH_INCOME" });
+    await ctx.reply(
+      "Masukkan total pendapatan tetap bersih per bulan. Contoh: 8000000",
     );
   });
 
@@ -1392,21 +1805,92 @@ Mata uang yang umum digunakan adalah ${countryCurrency[country]}. Kamu dapat men
         );
         return;
       }
-      if (state.kind === "PAY_DEBT") {
+      if (state.kind === "PAY_DEBT_AMOUNT") {
         const amount = num(ctx.message.text);
         if (!(amount > 0)) return ctx.reply("Nominal tidak valid.");
-        const r: any = await debtService.pay(u.id, state.debtId, {
+        if (amount > state.suggestedAmount) {
+          return ctx.reply(
+            `Nominal melebihi sisa tagihan ${currency(state.suggestedAmount, state.currency)}.`,
+          );
+        }
+        await askDebtPaymentDate(ctx, {
+          debtId: state.debtId,
+          debtName: state.debtName,
+          installmentId: state.installmentId,
+          period: state.period,
           amount,
-          paidAt: new Date(),
-          source: "TELEGRAM",
-          note: "Pembayaran via Telegram",
-          idempotencyKey: `tg-${ctx.chat.id}-${ctx.message.message_id}`,
+          currency: state.currency,
         });
+        return;
+      }
+      if (state.kind === "PAY_DEBT_CUSTOM_DATE") {
+        const raw = ctx.message.text.trim();
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+        if (!match) return ctx.reply("Format tanggal harus YYYY-MM-DD.");
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        const paidAt = new Date(Date.UTC(year, month - 1, day, 5));
+        if (
+          paidAt.getUTCFullYear() !== year ||
+          paidAt.getUTCMonth() !== month - 1 ||
+          paidAt.getUTCDate() !== day
+        ) {
+          return ctx.reply("Tanggal tidak valid.");
+        }
+        if (paidAt.getTime() > Date.now()) {
+          return ctx.reply("Tanggal pembayaran tidak boleh di masa depan.");
+        }
+        const { kind: _kind, ...draft } = state;
+        await sendDebtPaymentBanks(ctx, { ...draft, paidAt });
+        return;
+      }
+      if (state.kind === "DEBT_HEALTH_INCOME") {
+        const income = num(ctx.message.text);
+        if (!(income > 0)) {
+          return ctx.reply("Pendapatan tetap harus lebih dari 0.");
+        }
+        wizard.set(ctx.chat.id, { kind: "DEBT_HEALTH_EXPENSES", income });
+        await ctx.reply(
+          "Masukkan total pengeluaran wajib per bulan di luar cicilan. Boleh 0.",
+        );
+        return;
+      }
+      if (state.kind === "DEBT_HEALTH_EXPENSES") {
+        const expenses = num(ctx.message.text);
+        if (!/\d/.test(ctx.message.text) || expenses < 0) {
+          return ctx.reply("Pengeluaran wajib tidak valid.");
+        }
+        wizard.set(ctx.chat.id, {
+          kind: "DEBT_HEALTH_BUFFER",
+          income: state.income,
+          expenses,
+        });
+        await ctx.reply(
+          "Masukkan buffer pengaman bulanan yang tidak boleh dipakai untuk cicilan. Boleh 0.",
+        );
+        return;
+      }
+      if (state.kind === "DEBT_HEALTH_BUFFER") {
+        const buffer = num(ctx.message.text);
+        if (!/\d/.test(ctx.message.text) || buffer < 0) {
+          return ctx.reply("Buffer pengaman tidak valid.");
+        }
+        await settingsService.update(
+          u.id,
+          {
+            fixedMonthlyIncome: state.income,
+            mandatoryMonthlyExpenses: state.expenses,
+            debtSafetyBuffer: buffer,
+          },
+          "TELEGRAM",
+        );
         wizard.delete(ctx.chat.id);
         await ctx.reply(
-          `✅ Pembayaran <b>${html(currency(amount))}</b> untuk <b>${html(state.debtName)}</b> tercatat.\n📉 Sisa utang: <b>${html(currency(Number(r.debt.remainingPrincipal)))}</b>`,
+          `✅ Kemampuan bayar diperbarui.\n\nPendapatan tetap: <b>${html(currency(state.income))}</b>\nPengeluaran wajib: <b>${html(currency(state.expenses))}</b>\nBuffer pengaman: <b>${html(currency(buffer))}</b>\n\nBuka kembali detail utang untuk melihat status sehat atau mencekik terbaru.`,
           { parse_mode: "HTML", ...homeKeyboard() },
         );
+        return;
       }
     } catch (e: any) {
       await ctx.reply(`❌ ${e.message}`);

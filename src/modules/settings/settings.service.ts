@@ -33,6 +33,9 @@ export const defaultPreference = {
   compactNumbers: false,
   fxStaleHours: 24,
   onboardingCompleted: false,
+  fixedMonthlyIncome: 0,
+  mandatoryMonthlyExpenses: 0,
+  debtSafetyBuffer: 0,
 };
 
 type PreferenceDefaults = typeof defaultPreference;

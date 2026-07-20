@@ -23,6 +23,8 @@ import {
   simulateNewDebt,
 } from "./debt-simulation.service.js";
 import { debtService } from "./debt.service.js";
+import { debtOverviewService } from "./debt-overview.service.js";
+import { debtPaymentService } from "./debt-payment.service.js";
 export const debtRouter = Router();
 debtRouter.get(
   "/",
@@ -70,6 +72,18 @@ debtRouter.post(
       success: true,
       message: "Urgent override berhasil dievaluasi",
       data: applyUrgentOverride(urgentOverrideSchema.parse(req.body)),
+    }),
+  ),
+);
+debtRouter.get(
+  "/:id/overview",
+  asyncHandler(async (req, res) =>
+    res.json({
+      success: true,
+      data: await debtOverviewService.get(
+        getUserId(req),
+        String(req.params.id),
+      ),
     }),
   ),
 );
@@ -196,7 +210,7 @@ debtRouter.post(
       .json({
         success: true,
         message: "Pembayaran berhasil dicatat",
-        data: await debtService.pay(
+        data: await debtPaymentService.payFromBank(
           getUserId(req),
           String(req.params.id),
           paymentSchema.parse(req.body),

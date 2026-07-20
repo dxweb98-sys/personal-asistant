@@ -19,6 +19,9 @@ const settingsPatchSchema = z.object({
   compactNumbers: z.boolean().optional(),
   fxStaleHours: z.coerce.number().int().positive().optional(),
   onboardingCompleted: z.boolean().optional(),
+  fixedMonthlyIncome: z.coerce.number().nonnegative().optional(),
+  mandatoryMonthlyExpenses: z.coerce.number().nonnegative().optional(),
+  debtSafetyBuffer: z.coerce.number().nonnegative().optional(),
 });
 
 export const settingsRouter = Router();

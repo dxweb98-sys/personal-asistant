@@ -4,7 +4,11 @@ import {
   isTelegramInputBlocked,
   requiredFeatureForTelegramInput,
   telegramDebtDetailAction,
+  telegramDebtBankPaymentAction,
+  telegramDebtInstallmentPaymentAction,
+  telegramDebtHistoryAction,
   telegramDebtPaymentAction,
+  telegramDebtScheduleAction,
 } from "./telegram-feature-access.js";
 
 describe("Telegram feature access", () => {
@@ -60,5 +64,22 @@ describe("Telegram feature access", () => {
     expect(telegramDebtDetailAction.exec(`debt:${debtId}`)?.[1]).toBe(debtId);
     expect(telegramDebtDetailAction.test("debt:pay:not-a-uuid")).toBe(false);
     expect(telegramDebtDetailAction.test("debt:not-a-uuid")).toBe(false);
+  });
+
+  it("routes installment and bank payment callbacks with strict UUIDs", () => {
+    const id = "1aca3c38-df7e-4bba-a020-a08946d8234d";
+
+    expect(telegramDebtInstallmentPaymentAction.exec(`debtpay:i:${id}`)?.[1]).toBe(
+      id,
+    );
+    expect(telegramDebtBankPaymentAction.exec(`debtpay:b:${id}`)?.[1]).toBe(id);
+    expect(telegramDebtScheduleAction.exec(`debt:s:${id}`)?.[1]).toBe(id);
+    expect(telegramDebtHistoryAction.exec(`debt:h:${id}`)?.[1]).toBe(id);
+    expect(telegramDebtInstallmentPaymentAction.test("debtpay:i:not-a-uuid")).toBe(
+      false,
+    );
+    expect(telegramDebtBankPaymentAction.test("debtpay:b:not-a-uuid")).toBe(
+      false,
+    );
   });
 });

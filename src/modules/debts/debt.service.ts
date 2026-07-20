@@ -8,17 +8,19 @@ import { prisma } from "../../lib/prisma.js";
 import { HttpError } from "../../common/http-error.js";
 import { moneyToNumber, roundMoney } from "../../common/money.js";
 import { calculateLateFee } from "./late-fee.js";
+import { generateDebtSchedule } from "./debt-schedule.calculator.js";
+import type { DebtInterestMethod } from "./debt-calculation.types.js";
 
 const includeDetail = {
   lateFeeRule: true,
   installments: {
     orderBy: { dueDate: "asc" as const },
-    include: { charges: true, adjustments: true },
+    include: { charges: true, billedCharges: true, adjustments: true },
   },
   charges: { orderBy: { createdAt: "asc" as const } },
   payments: {
     orderBy: { paidAt: "desc" as const },
-    include: { allocations: true },
+    include: { allocations: true, sourceAccount: true },
   },
   negotiations: { orderBy: { createdAt: "desc" as const } },
 };
@@ -95,82 +97,181 @@ export const debtService = {
     return debt;
   },
   async create(userId: string, input: any) {
-    const { lateFeeRule, generateInstallments, ...data } = input;
+    const {
+      lateFeeRule,
+      generateInstallments,
+      interestMethod: requestedInterestMethod,
+      alreadyPaidAmount,
+      ...data
+    } = input;
     return prisma.$transaction(async (tx: any) => {
-      const debt = await tx.debt.create({
-        data: {
-          ...data,
-          userId,
-          remainingPrincipal:
-            input.remainingPrincipal ?? input.originalPrincipal,
-          ...(lateFeeRule ? { lateFeeRule: { create: lateFeeRule } } : {}),
-        },
-        include: { lateFeeRule: true },
-      });
+      const principal = moneyToNumber(input.originalPrincipal);
+      const fixedMonthlyAmount = moneyToNumber(input.fixedMonthlyAmount);
+      const inferredInterestMethod: DebtInterestMethod =
+        requestedInterestMethod ??
+        (input.paymentPolicy === "FIXED" &&
+        input.tenorMonths &&
+        fixedMonthlyAmount * input.tenorMonths > principal
+          ? "MANUAL_CONTRACT"
+          : moneyToNumber(input.interestRateAnnual) > 0
+            ? "FLAT"
+            : "NONE");
+      let schedule: ReturnType<typeof generateDebtSchedule> | null = null;
       if (
         generateInstallments &&
         input.tenorMonths &&
         input.startDate &&
         input.dueDay
       ) {
-        const total = moneyToNumber(input.originalPrincipal);
-        const regular =
-          moneyToNumber(input.fixedMonthlyAmount) > 0
-            ? moneyToNumber(input.fixedMonthlyAmount)
-            : roundMoney(total / input.tenorMonths);
-        let allocated = 0;
-        const rows: Array<{
-          debtId: string;
-          period: string;
-          scheduledPrincipal: number;
-          dueDate: Date;
-        }> = [];
-        for (let i = 0; i < input.tenorMonths; i++) {
-          const base = new Date(
-            Date.UTC(
-              input.startDate.getUTCFullYear(),
-              input.startDate.getUTCMonth() + i,
-              1,
-            ),
+        const start = new Date(input.startDate);
+        const lastDay = new Date(
+          Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0),
+        ).getUTCDate();
+        const firstDueDate = new Date(
+          Date.UTC(
+            start.getUTCFullYear(),
+            start.getUTCMonth(),
+            Math.min(input.dueDay, lastDay),
+          ),
+        );
+        schedule = generateDebtSchedule({
+          principal,
+          tenorMonths: input.tenorMonths,
+          firstDueDate,
+          interestMethod: inferredInterestMethod,
+          annualInterestRate: moneyToNumber(input.interestRateAnnual),
+          ...(fixedMonthlyAmount > 0
+            ? { contractBaseInstallment: fixedMonthlyAmount }
+            : {}),
+        });
+        if (
+          moneyToNumber(alreadyPaidAmount ?? 0) >
+          schedule.totalContractPayment
+        ) {
+          throw new HttpError(
+            400,
+            "Jumlah yang sudah terbayar melebihi total kontrak",
           );
-          const y = base.getUTCFullYear();
-          const m = base.getUTCMonth();
-          const lastDay = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
-          const day = Math.min(input.dueDay, lastDay);
-          const dueDate = new Date(Date.UTC(y, m, day));
-          const period = `${y}-${String(m + 1).padStart(2, "0")}`;
-          const amount =
-            i === input.tenorMonths - 1
-              ? roundMoney(total - allocated)
-              : Math.min(regular, roundMoney(total - allocated));
-          allocated = roundMoney(allocated + amount);
-          rows.push({
-            debtId: debt.id,
-            period,
-            scheduledPrincipal: amount,
-            dueDate,
-          });
         }
-        await tx.debtInstallment.createMany({ data: rows });
-        const maturityDate = rows.at(-1)?.dueDate;
+      }
+      const debt = await tx.debt.create({
+        data: {
+          ...data,
+          userId,
+          interestMethod: inferredInterestMethod,
+          totalContractAmount:
+            schedule?.totalContractPayment ??
+            (fixedMonthlyAmount > 0 && input.tenorMonths
+              ? roundMoney(fixedMonthlyAmount * input.tenorMonths)
+              : null),
+          remainingPrincipal:
+            input.remainingPrincipal ?? input.originalPrincipal,
+          ...(lateFeeRule ? { lateFeeRule: { create: lateFeeRule } } : {}),
+        },
+        include: { lateFeeRule: true },
+      });
+      const createdInstallments: Array<{
+        id: string;
+        dueDate: Date;
+        baseInstallment: number;
+      }> = [];
+      if (schedule) {
+        for (const row of schedule.installments) {
+          const installment = await tx.debtInstallment.create({
+            data: {
+              debtId: debt.id,
+              period: row.period,
+              scheduledPrincipal: row.principal,
+              dueDate: row.dueDate,
+            },
+          });
+          createdInstallments.push({
+            id: installment.id,
+            dueDate: row.dueDate,
+            baseInstallment: row.baseInstallment,
+          });
+          const charges = [
+            ...(row.interest > 0
+              ? [
+                  {
+                    type: "INTEREST",
+                    amount: row.interest,
+                    description: `Bunga cicilan periode ${row.period}`,
+                  },
+                ]
+              : []),
+            ...(row.fees > 0
+              ? [
+                  {
+                    type: "ADMIN_FEE",
+                    amount: row.fees,
+                    description: `Biaya cicilan periode ${row.period}`,
+                  },
+                ]
+              : []),
+          ];
+          for (const charge of charges) {
+            await tx.debtCharge.create({
+              data: {
+                debtId: debt.id,
+                billedInstallmentId: installment.id,
+                type: charge.type,
+                amount: charge.amount,
+                billingStatus: "PENDING",
+                settlementPolicy: "IMMEDIATE",
+                targetPeriod: row.period,
+                estimated: row.estimated,
+                description: charge.description,
+              },
+            });
+          }
+        }
+        const maturityDate = schedule.installments.at(-1)?.dueDate;
         if (maturityDate)
           await tx.debt.update({
             where: { id: debt.id },
             data: { maturityDate },
           });
+        let openingPaid = moneyToNumber(alreadyPaidAmount ?? 0);
+        for (const installment of createdInstallments) {
+          if (openingPaid <= 0) break;
+          const amount = Math.min(openingPaid, installment.baseInstallment);
+          await debtService.pay(
+            userId,
+            debt.id,
+            {
+              amount,
+              paidAt: installment.dueDate,
+              source: "SYSTEM",
+              note: "Saldo pembayaran sebelum utang ditambahkan",
+              installmentId: installment.id,
+              idempotencyKey: `opening-${debt.id}-${installment.id}`,
+            },
+            tx,
+          );
+          openingPaid = roundMoney(openingPaid - amount);
+        }
       }
       return tx.debt.findUnique({
         where: { id: debt.id },
         include: {
           lateFeeRule: true,
-          installments: { orderBy: { dueDate: "asc" } },
+          installments: {
+            orderBy: { dueDate: "asc" },
+            include: { billedCharges: true },
+          },
         },
       });
     });
   },
   async update(userId: string, id: string, input: any) {
     await this.find(userId, id);
-    const { lateFeeRule, ...data } = input;
+    const {
+      lateFeeRule,
+      generateInstallments: _generateInstallments,
+      alreadyPaidAmount: _alreadyPaidAmount,
+      ...data
+    } = input;
     return prisma.debt.update({
       where: { id },
       data: {
@@ -298,19 +399,23 @@ export const debtService = {
       return adj;
     });
   },
-  async pay(userId: string, debtId: string, input: any) {
-    return prisma.$transaction(async (tx: any) => {
+  async pay(userId: string, debtId: string, input: any, transaction?: any) {
+    const execute = async (tx: any) => {
       if (input.idempotencyKey) {
         const existing = await tx.debtPayment.findUnique({
           where: { idempotencyKey: input.idempotencyKey },
-          include: { allocations: true },
+          include: { allocations: true, debt: true, sourceAccount: true },
         });
-        if (existing)
+        if (existing) {
+          if (existing.debt.userId !== userId || existing.debtId !== debtId) {
+            throw new HttpError(409, "Idempotency key sudah digunakan");
+          }
           return {
             payment: existing,
             idempotentReplay: true,
             overallSummary: await overallSummary(tx, userId),
           };
+        }
       }
       const debt = await tx.debt.findFirst({
         where: { id: debtId, userId },
@@ -339,6 +444,35 @@ export const debtService = {
         : debt.installments[0];
       if (input.installmentId && !installment)
         throw new HttpError(404, "Tagihan periode tidak ditemukan");
+      if (installment) {
+        await tx.debtCharge.updateMany({
+          where: {
+            debtId,
+            billingStatus: "PENDING",
+            OR: [
+              { billedInstallmentId: installment.id },
+              { targetPeriod: installment.period },
+            ],
+          },
+          data: { billingStatus: "BILLED" },
+        });
+        if (
+          debt.installments.length === 1 &&
+          debt.installments[0]?.id === installment.id
+        ) {
+          await tx.debtCharge.updateMany({
+            where: {
+              debtId,
+              billingStatus: "PENDING",
+              settlementPolicy: "END_OF_TERM",
+            },
+            data: {
+              billingStatus: "BILLED",
+              billedInstallmentId: installment.id,
+            },
+          });
+        }
+      }
       if (installment && debt.lateFeeRule) {
         const result = calculateLateFee(
           debt.lateFeeRule,
@@ -372,12 +506,51 @@ export const debtService = {
               description: `Denda keterlambatan ${result.chargeableDays} hari`,
             },
           });
+        } else if (
+          exists &&
+          ["DAILY", "PERCENTAGE_DAILY"].includes(
+            debt.lateFeeRule.calculationType,
+          ) &&
+          result.chargeableDays > Number(exists.lateDays ?? 0)
+        ) {
+          const additionalDays =
+            result.chargeableDays - Number(exists.lateDays ?? 0);
+          const dailyAccrual =
+            debt.lateFeeRule.calculationType === "DAILY"
+              ? moneyToNumber(debt.lateFeeRule.dailyAmount)
+              : result.amount / result.chargeableDays;
+          let amount = roundMoney(
+            moneyToNumber(exists.amount) + dailyAccrual * additionalDays,
+          );
+          if (debt.lateFeeRule.maxAmount) {
+            amount = Math.min(
+              amount,
+              moneyToNumber(debt.lateFeeRule.maxAmount),
+            );
+          }
+          const paidAmount = moneyToNumber(exists.paidAmount);
+          const policy = debt.lateFeeRule.settlementPolicy;
+          await tx.debtCharge.update({
+            where: { id: exists.id },
+            data: {
+              amount,
+              lateDays: result.chargeableDays,
+              billingStatus:
+                policy === LateFeeSettlementPolicy.IMMEDIATE
+                  ? chargeStatus(amount, paidAmount)
+                  : exists.billingStatus === "PAID"
+                    ? "PENDING"
+                    : exists.billingStatus,
+              description: `Denda keterlambatan ${result.chargeableDays} hari`,
+            },
+          });
         }
       }
       const payment = await tx.debtPayment.create({
         data: {
           debtId,
           amount: input.amount,
+          sourceAccountId: input.sourceAccountId,
           paidAt,
           source: input.source,
           note: input.note,
@@ -387,7 +560,20 @@ export const debtService = {
       let left = input.amount;
       const allocations: any[] = [];
       const freshCharges = await tx.debtCharge.findMany({
-        where: { debtId, billingStatus: { in: ["BILLED", "PARTIAL"] } },
+        where: {
+          debtId,
+          billingStatus: { in: ["BILLED", "PARTIAL"] },
+          ...(installment
+            ? {
+                OR: [
+                  { billedInstallmentId: installment.id },
+                  { sourceInstallmentId: installment.id },
+                  { targetPeriod: installment.period },
+                  { settlementPolicy: "END_OF_TERM" },
+                ],
+              }
+            : {}),
+        },
         orderBy: { createdAt: "asc" },
       });
       const allocateCharges = async () => {
@@ -482,6 +668,42 @@ export const debtService = {
           "Pembayaran melebihi kewajiban yang dapat dialokasikan",
           { unallocatedAmount: left },
         );
+      if (installment) {
+        const currentInstallment = await tx.debtInstallment.findUnique({
+          where: { id: installment.id },
+        });
+        const installmentCharges = await tx.debtCharge.findMany({
+          where: {
+            debtId,
+            OR: [
+              { billedInstallmentId: installment.id },
+              { sourceInstallmentId: installment.id },
+              { targetPeriod: installment.period },
+              { settlementPolicy: "END_OF_TERM" },
+            ],
+            billingStatus: { in: ["BILLED", "PARTIAL"] },
+          },
+        });
+        const chargesPaid = installmentCharges.every(
+          (charge: any) =>
+            moneyToNumber(charge.paidAmount) >= moneyToNumber(charge.amount),
+        );
+        const principalPaid =
+          moneyToNumber(currentInstallment?.paidPrincipal) >=
+          moneyToNumber(currentInstallment?.scheduledPrincipal);
+        const late = new Date(paidAt) > new Date(installment.dueDate);
+        await tx.debtInstallment.update({
+          where: { id: installment.id },
+          data: {
+            status:
+              principalPaid && chargesPaid
+                ? late
+                  ? "PAID_LATE"
+                  : "PAID"
+                : "PARTIAL",
+          },
+        });
+      }
       const updated = await tx.debt.findUnique({
         where: { id: debtId },
         include: { charges: true, installments: true },
@@ -513,11 +735,12 @@ export const debtService = {
         installment: installment
           ? await tx.debtInstallment.findUnique({
               where: { id: installment.id },
-              include: { charges: true },
+              include: { charges: true, billedCharges: true },
             })
           : null,
         overallSummary: await overallSummary(tx, userId),
       };
-    });
+    };
+    return transaction ? execute(transaction) : prisma.$transaction(execute);
   },
 };

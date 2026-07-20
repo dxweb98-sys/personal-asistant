@@ -540,6 +540,10 @@ export const financeService = {
     );
   },
 
+  async recordWithinTransaction(tx: any, userId: string, input: TxInput) {
+    return recordInTransaction(tx, userId, input, await snapshot(userId, input));
+  },
+
   async listTransactions(
     userId: string,
     fromOrInput?: Date | ListInput,
@@ -691,6 +695,11 @@ export const financeService = {
           include: { allocations: true, debt: true },
         });
         if (payment && payment.status !== "VOIDED") {
+          const reversedPrincipal = payment.allocations.reduce(
+            (sum: number, allocation: any) =>
+              sum + numberValue(allocation.principalAmount),
+            0,
+          );
           for (const allocation of payment.allocations) {
             if (
               allocation.installmentId &&
@@ -740,7 +749,7 @@ export const financeService = {
           await tx.debt.update({
             where: { id: payment.debtId },
             data: {
-              remainingPrincipal: { increment: amount },
+              remainingPrincipal: { increment: reversedPrincipal },
               status: "ACTIVE",
             },
           });
