@@ -81,7 +81,9 @@ export const transactionListSchema = z.object({
 
 export const templateSchema = z.object({
   name: z.string().trim().min(2).max(100),
-  payload: transactionSchema.omit({ idempotencyKey: true }).partial({ amount: true }),
+  payload: transactionSchema
+    .omit({ idempotencyKey: true })
+    .partial({ amount: true }),
   isFavorite: z.boolean().default(false),
 });
 

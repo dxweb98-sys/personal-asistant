@@ -24,7 +24,10 @@ financeRouter.post(
   asyncHandler(async (req, res) =>
     res.status(201).json({
       success: true,
-      data: await financeService.createAccount(getUserId(req), accountSchema.parse(req.body)),
+      data: await financeService.createAccount(
+        getUserId(req),
+        accountSchema.parse(req.body),
+      ),
     }),
   ),
 );
@@ -47,7 +50,10 @@ financeRouter.get(
   asyncHandler(async (req, res) =>
     res.json({
       success: true,
-      data: await financeService.recommendArchiveTargets(getUserId(req), String(req.params.id)),
+      data: await financeService.recommendArchiveTargets(
+        getUserId(req),
+        String(req.params.id),
+      ),
     }),
   ),
 );
@@ -73,7 +79,10 @@ financeRouter.post(
     res.json({
       success: true,
       message: "Account berhasil dipulihkan",
-      data: await financeService.restoreAccount(getUserId(req), String(req.params.id)),
+      data: await financeService.restoreAccount(
+        getUserId(req),
+        String(req.params.id),
+      ),
     }),
   ),
 );
@@ -83,7 +92,10 @@ financeRouter.post(
   asyncHandler(async (req, res) =>
     res.status(201).json({
       success: true,
-      data: await financeService.createCategory(getUserId(req), categorySchema.parse(req.body)),
+      data: await financeService.createCategory(
+        getUserId(req),
+        categorySchema.parse(req.body),
+      ),
     }),
   ),
 );
@@ -94,7 +106,10 @@ financeRouter.post(
     res.status(201).json({
       success: true,
       message: "Transaksi berhasil dicatat",
-      data: await financeService.record(getUserId(req), transactionSchema.parse(req.body)),
+      data: await financeService.record(
+        getUserId(req),
+        transactionSchema.parse(req.body),
+      ),
     }),
   ),
 );
@@ -152,7 +167,8 @@ financeRouter.get(
         ...(req.query.favorite !== undefined
           ? { favorite: String(req.query.favorite) === "true" }
           : {}),
-        includeInactive: String(req.query.includeInactive ?? "false") === "true",
+        includeInactive:
+          String(req.query.includeInactive ?? "false") === "true",
       }),
     }),
   ),
@@ -163,7 +179,10 @@ financeRouter.post(
   asyncHandler(async (req, res) =>
     res.status(201).json({
       success: true,
-      data: await templateService.create(getUserId(req), templateSchema.parse(req.body)),
+      data: await templateService.create(
+        getUserId(req),
+        templateSchema.parse(req.body),
+      ),
     }),
   ),
 );
@@ -176,7 +195,9 @@ financeRouter.patch(
       data: await templateService.update(
         getUserId(req),
         String(req.params.id),
-        templateUpdateSchema.extend({ isActive: z.boolean().optional() }).parse(req.body),
+        templateUpdateSchema
+          .extend({ isActive: z.boolean().optional() })
+          .parse(req.body),
       ),
     }),
   ),
@@ -185,7 +206,10 @@ financeRouter.patch(
 financeRouter.post(
   "/templates/:id/use",
   asyncHandler(async (req, res) =>
-    res.json({ success: true, data: await templateService.use(getUserId(req), String(req.params.id)) }),
+    res.json({
+      success: true,
+      data: await templateService.use(getUserId(req), String(req.params.id)),
+    }),
   ),
 );
 
@@ -231,7 +255,10 @@ financeRouter.patch(
 financeRouter.get(
   "/tags",
   asyncHandler(async (req, res) =>
-    res.json({ success: true, data: await templateService.listTags(getUserId(req)) }),
+    res.json({
+      success: true,
+      data: await templateService.listTags(getUserId(req)),
+    }),
   ),
 );
 
@@ -240,7 +267,10 @@ financeRouter.post(
   asyncHandler(async (req, res) =>
     res.status(201).json({
       success: true,
-      data: await templateService.createTag(getUserId(req), tagSchema.parse(req.body).name),
+      data: await templateService.createTag(
+        getUserId(req),
+        tagSchema.parse(req.body).name,
+      ),
     }),
   ),
 );

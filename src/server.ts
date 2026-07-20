@@ -8,7 +8,9 @@ import {
 import { migrateLegacyTelegramProfiles } from "./modules/telegram/telegram-profile-migration.service.js";
 
 const server = app.listen(env.PORT, () =>
-  console.log(`Personal Finance OS API running at http://localhost:${env.PORT}`),
+  console.log(
+    `Personal Finance OS API running at http://localhost:${env.PORT}`,
+  ),
 );
 
 async function startIntegrations() {

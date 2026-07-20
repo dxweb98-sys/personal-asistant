@@ -21,7 +21,9 @@ const sanitize = (value: string) =>
     .replace(/^-|-$/g, "")
     .toLowerCase();
 const dateID = (value: Date, timeZone = "Asia/Jakarta") =>
-  new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeZone }).format(value);
+  new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeZone }).format(
+    value,
+  );
 const jsonSafe = (value: unknown) =>
   JSON.parse(
     JSON.stringify(value, (_key, item) => {
@@ -46,7 +48,8 @@ async function debtData(userId: string, debtId?: string) {
     },
     orderBy: { createdAt: "desc" },
   });
-  if (debtId && debts.length === 0) throw new HttpError(404, "Utang tidak ditemukan");
+  if (debtId && debts.length === 0)
+    throw new HttpError(404, "Utang tidak ditemukan");
   return debts;
 }
 
@@ -68,17 +71,23 @@ async function rowsFor(
         PokokAwal: moneyToNumber(debt.originalPrincipal),
         SisaPokok: moneyToNumber(debt.remainingPrincipal),
         DendaTertagih: debt.charges
-          .filter((charge: any) => ["BILLED", "PARTIAL"].includes(charge.billingStatus))
+          .filter((charge: any) =>
+            ["BILLED", "PARTIAL"].includes(charge.billingStatus),
+          )
           .reduce(
             (sum: number, charge: any) =>
-              sum + moneyToNumber(charge.amount) - moneyToNumber(charge.paidAmount),
+              sum +
+              moneyToNumber(charge.amount) -
+              moneyToNumber(charge.paidAmount),
             0,
           ),
         DendaTertunda: debt.charges
           .filter((charge: any) => charge.billingStatus === "PENDING")
           .reduce(
             (sum: number, charge: any) =>
-              sum + moneyToNumber(charge.amount) - moneyToNumber(charge.paidAmount),
+              sum +
+              moneyToNumber(charge.amount) -
+              moneyToNumber(charge.paidAmount),
             0,
           ),
         Status: debt.status,
@@ -96,7 +105,8 @@ async function rowsFor(
           MataUang: debt.currency,
           Nominal: moneyToNumber(payment.amount),
           KePokok: payment.allocations.reduce(
-            (sum: number, item: any) => sum + moneyToNumber(item.principalAmount),
+            (sum: number, item: any) =>
+              sum + moneyToNumber(item.principalAmount),
             0,
           ),
           KeDendaBiaya: payment.allocations.reduce(
@@ -132,11 +142,14 @@ async function rowsFor(
 function csv(rows: Row[]) {
   if (!rows.length) return Buffer.from("Tidak ada data\n");
   const headers = Object.keys(rows[0]!);
-  const escapeValue = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const escapeValue = (value: unknown) =>
+    `"${String(value ?? "").replaceAll('"', '""')}"`;
   return Buffer.from(
     [
       headers.map(escapeValue).join(","),
-      ...rows.map((row) => headers.map((header) => escapeValue(row[header])).join(",")),
+      ...rows.map((row) =>
+        headers.map((header) => escapeValue(row[header])).join(","),
+      ),
     ].join("\n"),
     "utf8",
   );
@@ -154,7 +167,9 @@ async function basicXlsx(title: string, rows: Row[]) {
     const headers = Object.keys(rows[0]!);
     worksheet.addRow(headers);
     worksheet.getRow(2).font = { bold: true };
-    rows.forEach((row) => worksheet.addRow(headers.map((header) => row[header])));
+    rows.forEach((row) =>
+      worksheet.addRow(headers.map((header) => row[header])),
+    );
     worksheet.columns.forEach((column) => {
       column.width = 20;
     });
@@ -175,9 +190,12 @@ function basicPdf(title: string, rows: Row[]) {
     rows.forEach((row, index) => {
       document
         .fontSize(11)
-        .text(`${index + 1}. ${String(row.Utang ?? row.Periode ?? row.Tanggal ?? "Data")}`, {
-          underline: true,
-        });
+        .text(
+          `${index + 1}. ${String(row.Utang ?? row.Periode ?? row.Tanggal ?? "Data")}`,
+          {
+            underline: true,
+          },
+        );
       for (const [key, value] of Object.entries(row)) {
         if (["Utang", "Periode", "Tanggal"].includes(key)) continue;
         document.fontSize(9).text(`${key}: ${String(value ?? "-")}`);
@@ -205,7 +223,9 @@ function reportTransactionRows(report: any): Row[] {
     KursKeMataUangUtama: transaction.fxRateToBase
       ? numberValue(transaction.fxRateToBase)
       : null,
-    NilaiMataUangUtama: transaction.baseAmount ? numberValue(transaction.baseAmount) : null,
+    NilaiMataUangUtama: transaction.baseAmount
+      ? numberValue(transaction.baseAmount)
+      : null,
     MataUangUtama: transaction.baseCurrency ?? report.currency,
     DibatalkanPada: transaction.voidedAt
       ? new Date(transaction.voidedAt).toISOString()
@@ -243,7 +263,11 @@ async function financialXlsx(report: any) {
   const rows = reportTransactionRows(report);
   const detail = workbook.addWorksheet("Detail Transaksi");
   if (rows.length) {
-    detail.columns = Object.keys(rows[0]!).map((header) => ({ header, key: header, width: 22 }));
+    detail.columns = Object.keys(rows[0]!).map((header) => ({
+      header,
+      key: header,
+      width: 22,
+    }));
     detail.addRows(rows);
   }
 
@@ -267,7 +291,10 @@ async function financialXlsx(report: any) {
 
   for (const account of report.accounts) {
     const worksheet = workbook.addWorksheet(
-      `Akun-${sanitize(account.accountName).slice(0, 25) || account.accountId.slice(0, 8)}`.slice(0, 31),
+      `Akun-${sanitize(account.accountName).slice(0, 25) || account.accountId.slice(0, 8)}`.slice(
+        0,
+        31,
+      ),
     );
     worksheet.addRows([
       ["Account", account.accountName],
@@ -334,7 +361,11 @@ function financialPdf(report: any) {
       if (document.y > 750) document.addPage();
     }
     if (report.transactions.length > 100) {
-      document.fontSize(9).text("Detail dibatasi 100 transaksi pada PDF. Gunakan XLSX atau CSV untuk data lengkap.");
+      document
+        .fontSize(9)
+        .text(
+          "Detail dibatasi 100 transaksi pada PDF. Gunakan XLSX atau CSV untuk data lengkap.",
+        );
     }
     document.end();
   });
@@ -356,7 +387,10 @@ export async function buildFinancialExport(
   if (format === "xlsx") buffer = await financialXlsx(allTransactionsReport);
   else if (format === "pdf") buffer = await financialPdf(allTransactionsReport);
   else if (format === "json") {
-    buffer = Buffer.from(JSON.stringify(jsonSafe(allTransactionsReport), null, 2), "utf8");
+    buffer = Buffer.from(
+      JSON.stringify(jsonSafe(allTransactionsReport), null, 2),
+      "utf8",
+    );
   } else {
     buffer = csv(reportTransactionRows(allTransactionsReport));
   }

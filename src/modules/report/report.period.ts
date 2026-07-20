@@ -1,7 +1,14 @@
 import { HttpError } from "../../common/http-error.js";
 import type { ReportQuery } from "./report.schema.js";
 
-type DateParts = { year: number; month: number; day: number; hour: number; minute: number; second: number };
+type DateParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+};
 
 export function zonedParts(date: Date, timeZone: string): DateParts {
   const formatter = new Intl.DateTimeFormat("en-CA", {
@@ -58,7 +65,9 @@ export function zonedDateToUtc(
 
 export function addLocalDays(timeZone: string, date: Date, days: number) {
   const parts = zonedParts(date, timeZone);
-  const temp = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  const temp = new Date(
+    Date.UTC(parts.year, parts.month - 1, parts.day + days),
+  );
   return zonedDateToUtc(
     timeZone,
     temp.getUTCFullYear(),
@@ -82,11 +91,17 @@ export function resolveReportPeriod(
   weekStartsOn: number,
   reference = new Date(),
 ) {
-  if (query.preset === "ALL") return { from: null, to: null, label: "Seluruh periode" };
+  if (query.preset === "ALL")
+    return { from: null, to: null, label: "Seluruh periode" };
 
   const ref = query.date ?? reference;
   const refParts = zonedParts(ref, timeZone);
-  const startToday = zonedDateToUtc(timeZone, refParts.year, refParts.month, refParts.day);
+  const startToday = zonedDateToUtc(
+    timeZone,
+    refParts.year,
+    refParts.month,
+    refParts.day,
+  );
   let from: Date;
   let to: Date;
   let label: string = query.preset;
@@ -96,7 +111,10 @@ export function resolveReportPeriod(
     case "DAY":
       from = startToday;
       to = endOfLocalDay(timeZone, startToday);
-      label = new Intl.DateTimeFormat("id-ID", { dateStyle: "long", timeZone }).format(from);
+      label = new Intl.DateTimeFormat("id-ID", {
+        dateStyle: "long",
+        timeZone,
+      }).format(from);
       break;
     case "THIS_WEEK":
     case "WEEK": {
@@ -110,30 +128,58 @@ export function resolveReportPeriod(
     case "THIS_MONTH":
       from = zonedDateToUtc(timeZone, refParts.year, refParts.month, 1);
       to = new Date(
-        zonedDateToUtc(timeZone, refParts.year, refParts.month + 1, 1).getTime() - 1,
+        zonedDateToUtc(
+          timeZone,
+          refParts.year,
+          refParts.month + 1,
+          1,
+        ).getTime() - 1,
       );
-      label = new Intl.DateTimeFormat("id-ID", { month: "long", year: "numeric", timeZone }).format(from);
+      label = new Intl.DateTimeFormat("id-ID", {
+        month: "long",
+        year: "numeric",
+        timeZone,
+      }).format(from);
       break;
     case "PREVIOUS_MONTH": {
       const temp = new Date(Date.UTC(refParts.year, refParts.month - 2, 1));
-      from = zonedDateToUtc(timeZone, temp.getUTCFullYear(), temp.getUTCMonth() + 1, 1);
-      to = new Date(
-        zonedDateToUtc(timeZone, refParts.year, refParts.month, 1).getTime() - 1,
+      from = zonedDateToUtc(
+        timeZone,
+        temp.getUTCFullYear(),
+        temp.getUTCMonth() + 1,
+        1,
       );
-      label = new Intl.DateTimeFormat("id-ID", { month: "long", year: "numeric", timeZone }).format(from);
+      to = new Date(
+        zonedDateToUtc(timeZone, refParts.year, refParts.month, 1).getTime() -
+          1,
+      );
+      label = new Intl.DateTimeFormat("id-ID", {
+        month: "long",
+        year: "numeric",
+        timeZone,
+      }).format(from);
       break;
     }
     case "MONTH": {
-      if (!query.month) throw new HttpError(400, "month wajib diisi dengan format YYYY-MM");
+      if (!query.month)
+        throw new HttpError(400, "month wajib diisi dengan format YYYY-MM");
       const [year, month] = query.month.split("-").map(Number);
       from = zonedDateToUtc(timeZone, year!, month!, 1);
-      to = new Date(zonedDateToUtc(timeZone, year!, month! + 1, 1).getTime() - 1);
-      label = new Intl.DateTimeFormat("id-ID", { month: "long", year: "numeric", timeZone }).format(from);
+      to = new Date(
+        zonedDateToUtc(timeZone, year!, month! + 1, 1).getTime() - 1,
+      );
+      label = new Intl.DateTimeFormat("id-ID", {
+        month: "long",
+        year: "numeric",
+        timeZone,
+      }).format(from);
       break;
     }
     case "THIS_YEAR":
       from = zonedDateToUtc(timeZone, refParts.year, 1, 1);
-      to = new Date(zonedDateToUtc(timeZone, refParts.year + 1, 1, 1).getTime() - 1);
+      to = new Date(
+        zonedDateToUtc(timeZone, refParts.year + 1, 1, 1).getTime() - 1,
+      );
       label = String(refParts.year);
       break;
     case "YEAR": {
@@ -144,10 +190,18 @@ export function resolveReportPeriod(
       break;
     }
     case "CUSTOM":
-      if (!query.from || !query.to) throw new HttpError(400, "from dan to wajib diisi untuk rentang khusus");
+      if (!query.from || !query.to)
+        throw new HttpError(
+          400,
+          "from dan to wajib diisi untuk rentang khusus",
+        );
       from = query.from;
       to = query.to;
-      if (from > to) throw new HttpError(400, "Tanggal awal tidak boleh setelah tanggal akhir");
+      if (from > to)
+        throw new HttpError(
+          400,
+          "Tanggal awal tidak boleh setelah tanggal akhir",
+        );
       label = `${new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeZone }).format(from)} – ${new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeZone }).format(to)}`;
       break;
     default:
@@ -156,13 +210,19 @@ export function resolveReportPeriod(
   return { from, to, label };
 }
 
-export function groupKey(date: Date, grouping: ReportQuery["grouping"], timeZone: string, weekStartsOn: number) {
+export function groupKey(
+  date: Date,
+  grouping: ReportQuery["grouping"],
+  timeZone: string,
+  weekStartsOn: number,
+) {
   if (grouping === "NONE") return "TOTAL";
   const parts = zonedParts(date, timeZone);
   if (grouping === "DAY") {
     return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
   }
-  if (grouping === "MONTH") return `${parts.year}-${String(parts.month).padStart(2, "0")}`;
+  if (grouping === "MONTH")
+    return `${parts.year}-${String(parts.month).padStart(2, "0")}`;
   if (grouping === "YEAR") return String(parts.year);
   const start = zonedDateToUtc(timeZone, parts.year, parts.month, parts.day);
   const delta = (localDayOfWeek(timeZone, start) - weekStartsOn + 7) % 7;

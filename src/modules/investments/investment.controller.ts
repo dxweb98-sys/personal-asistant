@@ -13,16 +13,14 @@ export const investmentRouter = Router();
 investmentRouter.post(
   "/platforms",
   asyncHandler(async (req, res) =>
-    res
-      .status(201)
-      .json({
-        success: true,
-        message: "Platform investasi berhasil ditambahkan",
-        data: await investmentService.createPlatform(
-          getUserId(req),
-          platformSchema.parse(req.body),
-        ),
-      }),
+    res.status(201).json({
+      success: true,
+      message: "Platform investasi berhasil ditambahkan",
+      data: await investmentService.createPlatform(
+        getUserId(req),
+        platformSchema.parse(req.body),
+      ),
+    }),
   ),
 );
 investmentRouter.get(
@@ -37,15 +35,13 @@ investmentRouter.get(
 investmentRouter.post(
   "/instruments",
   asyncHandler(async (req, res) =>
-    res
-      .status(201)
-      .json({
-        success: true,
-        data: await investmentService.createInstrument(
-          getUserId(req),
-          instrumentSchema.parse(req.body),
-        ),
-      }),
+    res.status(201).json({
+      success: true,
+      data: await investmentService.createInstrument(
+        getUserId(req),
+        instrumentSchema.parse(req.body),
+      ),
+    }),
   ),
 );
 investmentRouter.get(
@@ -60,45 +56,39 @@ investmentRouter.get(
 investmentRouter.post(
   "/trades",
   asyncHandler(async (req, res) =>
-    res
-      .status(201)
-      .json({
-        success: true,
-        message: "Transaksi investasi berhasil dicatat",
-        data: await investmentService.trade(
-          getUserId(req),
-          tradeSchema.parse(req.body),
-        ),
-      }),
+    res.status(201).json({
+      success: true,
+      message: "Transaksi investasi berhasil dicatat",
+      data: await investmentService.trade(
+        getUserId(req),
+        tradeSchema.parse(req.body),
+      ),
+    }),
   ),
 );
 investmentRouter.post(
   "/prices",
   asyncHandler(async (req, res) =>
-    res
-      .status(201)
-      .json({
-        success: true,
-        data: await investmentService.addPrice(
-          getUserId(req),
-          priceSchema.parse(req.body),
-        ),
-      }),
+    res.status(201).json({
+      success: true,
+      data: await investmentService.addPrice(
+        getUserId(req),
+        priceSchema.parse(req.body),
+      ),
+    }),
   ),
 );
 investmentRouter.post(
   "/dividends",
   asyncHandler(async (req, res) =>
-    res
-      .status(201)
-      .json({
-        success: true,
-        message: "Dividen berhasil dicatat",
-        data: await investmentService.addDividend(
-          getUserId(req),
-          dividendSchema.parse(req.body),
-        ),
-      }),
+    res.status(201).json({
+      success: true,
+      message: "Dividen berhasil dicatat",
+      data: await investmentService.addDividend(
+        getUserId(req),
+        dividendSchema.parse(req.body),
+      ),
+    }),
   ),
 );
 investmentRouter.get(

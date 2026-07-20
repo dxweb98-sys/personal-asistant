@@ -22,7 +22,10 @@ describe("resolveReportPeriod", () => {
   });
 
   it("resolves a selected month", () => {
-    const query = reportQuerySchema.parse({ preset: "MONTH", month: "2026-06" });
+    const query = reportQuerySchema.parse({
+      preset: "MONTH",
+      month: "2026-06",
+    });
     const result = resolveReportPeriod(query, "Asia/Jakarta", 1, reference);
 
     expect(result.from?.toISOString()).toBe("2026-05-31T17:00:00.000Z");

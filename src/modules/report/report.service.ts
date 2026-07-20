@@ -27,7 +27,13 @@ async function convertedAmount(
   baseCurrency: string,
   fxStaleHours: number,
 ) {
-  const conversion = await convertCurrency(userId, amount, currency, baseCurrency, fxStaleHours);
+  const conversion = await convertCurrency(
+    userId,
+    amount,
+    currency,
+    baseCurrency,
+    fxStaleHours,
+  );
   return conversion.convertedAmount;
 }
 
@@ -62,7 +68,9 @@ export const reportService = {
       ...dateFilter,
       ...statusFilter,
       ...(query.types?.length ? { type: { in: query.types } } : {}),
-      ...(query.categoryIds?.length ? { categoryId: { in: query.categoryIds } } : {}),
+      ...(query.categoryIds?.length
+        ? { categoryId: { in: query.categoryIds } }
+        : {}),
       ...(query.accountIds?.length
         ? {
             OR: [
@@ -76,32 +84,37 @@ export const reportService = {
         : {}),
     };
 
-    const [transactions, totalTransactions, accounts, debts, portfolio] = await Promise.all([
-      db.financialTransaction.findMany({
-        where,
-        include: {
-          category: true,
-          sourceAccount: true,
-          destinationAccount: true,
-          tags: { include: { tag: true } },
-        },
-        orderBy: { occurredAt: "desc" },
-      }),
-      db.financialTransaction.count({ where }),
-      db.financialAccount.findMany({
-        where: {
-          userId,
-          ...(query.accountIds?.length ? { id: { in: query.accountIds } } : {}),
-          ...(!query.includeArchivedAccounts ? { status: "ACTIVE", isActive: true } : {}),
-        },
-        orderBy: { name: "asc" },
-      }),
-      db.debt.findMany({
-        where: { userId, status: { notIn: ["PAID", "CANCELLED"] } },
-        include: { installments: true, charges: true },
-      }),
-      investmentService.portfolio(userId).catch(() => null),
-    ]);
+    const [transactions, totalTransactions, accounts, debts, portfolio] =
+      await Promise.all([
+        db.financialTransaction.findMany({
+          where,
+          include: {
+            category: true,
+            sourceAccount: true,
+            destinationAccount: true,
+            tags: { include: { tag: true } },
+          },
+          orderBy: { occurredAt: "desc" },
+        }),
+        db.financialTransaction.count({ where }),
+        db.financialAccount.findMany({
+          where: {
+            userId,
+            ...(query.accountIds?.length
+              ? { id: { in: query.accountIds } }
+              : {}),
+            ...(!query.includeArchivedAccounts
+              ? { status: "ACTIVE", isActive: true }
+              : {}),
+          },
+          orderBy: { name: "asc" },
+        }),
+        db.debt.findMany({
+          where: { userId, status: { notIn: ["PAID", "CANCELLED"] } },
+          include: { installments: true, charges: true },
+        }),
+        investmentService.portfolio(userId).catch(() => null),
+      ]);
 
     const totals = {
       income: 0,
@@ -120,7 +133,8 @@ export const reportService = {
     for (const transaction of transactions) {
       const native = numberValue(transaction.amount);
       const converted =
-        transaction.baseCurrency === preference.baseCurrency && transaction.baseAmount !== null
+        transaction.baseCurrency === preference.baseCurrency &&
+        transaction.baseAmount !== null
           ? numberValue(transaction.baseAmount)
           : await convertedAmount(
               userId,
@@ -160,8 +174,12 @@ export const reportService = {
       } else if (transaction.type === "TRANSFER") {
         totals.transferOut += converted;
         bucket.transferOut += converted;
-        const targetCurrency = String(transaction.metadata?.targetCurrency ?? transaction.currency);
-        const targetNative = numberValue(transaction.metadata?.targetAmount ?? native);
+        const targetCurrency = String(
+          transaction.metadata?.targetCurrency ?? transaction.currency,
+        );
+        const targetNative = numberValue(
+          transaction.metadata?.targetAmount ?? native,
+        );
         const targetConverted = await convertedAmount(
           userId,
           targetNative,
@@ -200,17 +218,22 @@ export const reportService = {
               userId,
               status: "POSTED",
               occurredAt: { lt: period.from },
-              OR: [{ sourceAccountId: account.id }, { destinationAccountId: account.id }],
+              OR: [
+                { sourceAccountId: account.id },
+                { destinationAccountId: account.id },
+              ],
             },
           })
         : [];
       const openingBalance = beforeRows.reduce(
-        (sum: number, row: any) => sum + transactionNativeEffect(row, account.id),
+        (sum: number, row: any) =>
+          sum + transactionNativeEffect(row, account.id),
         numberValue(account.openingBalance),
       );
       const inPeriod = transactions.filter(
         (row: any) =>
-          row.sourceAccountId === account.id || row.destinationAccountId === account.id,
+          row.sourceAccountId === account.id ||
+          row.destinationAccountId === account.id,
       );
       const accountTotals = {
         income: 0,
@@ -223,14 +246,20 @@ export const reportService = {
       for (const row of inPeriod) {
         const amount = numberValue(row.amount);
         const targetAmount = numberValue(row.metadata?.targetAmount ?? amount);
-        if (row.type === "INCOME" && row.destinationAccountId === account.id) accountTotals.income += amount;
-        if (row.type === "EXPENSE" && row.sourceAccountId === account.id) accountTotals.expense += amount;
-        if (row.type === "DEBT_PAYMENT" && row.sourceAccountId === account.id) accountTotals.debtPayment += amount;
+        if (row.type === "INCOME" && row.destinationAccountId === account.id)
+          accountTotals.income += amount;
+        if (row.type === "EXPENSE" && row.sourceAccountId === account.id)
+          accountTotals.expense += amount;
+        if (row.type === "DEBT_PAYMENT" && row.sourceAccountId === account.id)
+          accountTotals.debtPayment += amount;
         if (row.type === "TRANSFER") {
-          if (row.sourceAccountId === account.id) accountTotals.transferOut += amount;
-          if (row.destinationAccountId === account.id) accountTotals.transferIn += targetAmount;
+          if (row.sourceAccountId === account.id)
+            accountTotals.transferOut += amount;
+          if (row.destinationAccountId === account.id)
+            accountTotals.transferIn += targetAmount;
         }
-        if (row.type === "ADJUSTMENT") accountTotals.adjustment += transactionNativeEffect(row, account.id);
+        if (row.type === "ADJUSTMENT")
+          accountTotals.adjustment += transactionNativeEffect(row, account.id);
       }
       const closingBalance =
         openingBalance +
@@ -293,7 +322,8 @@ export const reportService = {
           userId,
           Math.max(
             0,
-            numberValue(installment.scheduledPrincipal) - numberValue(installment.paidPrincipal),
+            numberValue(installment.scheduledPrincipal) -
+              numberValue(installment.paidPrincipal),
           ),
           debt.currency,
           preference.baseCurrency,
@@ -302,12 +332,16 @@ export const reportService = {
         if (scheduled !== null) totalBills += scheduled;
         if (remaining !== null && remaining > 0) {
           unpaidBills += remaining;
-          if (["OVERDUE", "DUE"].includes(installment.status)) overdueBills += remaining;
+          if (["OVERDUE", "DUE"].includes(installment.status))
+            overdueBills += remaining;
         }
       }
     }
 
-    const duration = period.from && period.to ? period.to.getTime() - period.from.getTime() + 1 : null;
+    const duration =
+      period.from && period.to
+        ? period.to.getTime() - period.from.getTime() + 1
+        : null;
     let previous: any = null;
     if (duration && period.from) {
       const previousTo = new Date(period.from.getTime() - 1);
@@ -337,9 +371,19 @@ export const reportService = {
           preference.baseCurrency,
           preference.fxStaleHours,
         );
-        if (converted !== null) (previousTotals as any)[row.type === "INCOME" ? "income" : row.type === "EXPENSE" ? "expense" : "debtPayment"] += converted;
+        if (converted !== null)
+          (previousTotals as any)[
+            row.type === "INCOME"
+              ? "income"
+              : row.type === "EXPENSE"
+                ? "expense"
+                : "debtPayment"
+          ] += converted;
       }
-      const previousNet = previousTotals.income - previousTotals.expense - previousTotals.debtPayment;
+      const previousNet =
+        previousTotals.income -
+        previousTotals.expense -
+        previousTotals.debtPayment;
       previous = {
         from: previousFrom,
         to: previousTo,
@@ -349,20 +393,33 @@ export const reportService = {
           incomePercent:
             previousTotals.income === 0
               ? null
-              : ((totals.income - previousTotals.income) / previousTotals.income) * 100,
+              : ((totals.income - previousTotals.income) /
+                  previousTotals.income) *
+                100,
           expensePercent:
             previousTotals.expense === 0
               ? null
-              : ((totals.expense - previousTotals.expense) / previousTotals.expense) * 100,
+              : ((totals.expense - previousTotals.expense) /
+                  previousTotals.expense) *
+                100,
           netCashFlowPercent:
-            previousNet === 0 ? null : ((totals.netCashFlow - previousNet) / Math.abs(previousNet)) * 100,
+            previousNet === 0
+              ? null
+              : ((totals.netCashFlow - previousNet) / Math.abs(previousNet)) *
+                100,
         },
       };
     }
 
     const unallocated = accountReports
-      .filter((account: any) => String(account.accountName).startsWith("Dana Belum Dialokasikan"))
-      .reduce((sum: number, account: any) => sum + numberValue(account.convertedClosingBalance), 0);
+      .filter((account: any) =>
+        String(account.accountName).startsWith("Dana Belum Dialokasikan"),
+      )
+      .reduce(
+        (sum: number, account: any) =>
+          sum + numberValue(account.convertedClosingBalance),
+        0,
+      );
 
     return {
       filters: query,
@@ -393,7 +450,10 @@ export const reportService = {
       accounts: accountReports,
       transactions: options.allTransactions
         ? transactions
-        : transactions.slice((query.page - 1) * query.limit, query.page * query.limit),
+        : transactions.slice(
+            (query.page - 1) * query.limit,
+            query.page * query.limit,
+          ),
       pagination: {
         page: query.page,
         limit: query.limit,

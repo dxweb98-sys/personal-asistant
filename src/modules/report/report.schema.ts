@@ -17,7 +17,10 @@ export const reportQuerySchema = z.object({
     ])
     .default("THIS_MONTH"),
   date: z.coerce.date().optional(),
-  month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+  month: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/)
+    .optional(),
   year: z.coerce.number().int().min(1970).max(2200).optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),

@@ -12,7 +12,10 @@ export const reportRouter = Router();
 function normalizeList(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
   const values = Array.isArray(value) ? value : String(value).split(",");
-  const normalized = values.map(String).map((item) => item.trim()).filter(Boolean);
+  const normalized = values
+    .map(String)
+    .map((item) => item.trim())
+    .filter(Boolean);
   return normalized.length ? normalized : undefined;
 }
 

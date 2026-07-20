@@ -26,7 +26,10 @@ export const settingsRouter = Router();
 settingsRouter.get(
   "/",
   asyncHandler(async (req, res) => {
-    res.json({ success: true, data: await settingsService.get(getUserId(req)) });
+    res.json({
+      success: true,
+      data: await settingsService.get(getUserId(req)),
+    });
   }),
 );
 

@@ -18,10 +18,16 @@ export async function migrateLegacyTelegramProfiles() {
   const path = join(process.cwd(), "data", "telegram-profiles.json");
   let profiles: Record<string, LegacyProfile>;
   try {
-    profiles = JSON.parse(await readFile(path, "utf8")) as Record<string, LegacyProfile>;
+    profiles = JSON.parse(await readFile(path, "utf8")) as Record<
+      string,
+      LegacyProfile
+    >;
   } catch (error: any) {
     if (error?.code !== "ENOENT") {
-      console.warn("Legacy Telegram profile migration skipped:", error?.message ?? error);
+      console.warn(
+        "Legacy Telegram profile migration skipped:",
+        error?.message ?? error,
+      );
     }
     return { migrated: 0, skipped: 0 };
   }
@@ -50,7 +56,9 @@ export async function migrateLegacyTelegramProfiles() {
       {
         ...(legacy.country ? { countryCode: legacy.country } : {}),
         ...(legacy.language ? { language: legacy.language } : {}),
-        ...(legacy.currency ? { baseCurrency: legacy.currency.toUpperCase() } : {}),
+        ...(legacy.currency
+          ? { baseCurrency: legacy.currency.toUpperCase() }
+          : {}),
         ...(legacy.theme
           ? { telegramTheme: getTelegramTheme(legacy.theme).key }
           : {}),

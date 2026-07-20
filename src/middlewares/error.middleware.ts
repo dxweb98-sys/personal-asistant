@@ -9,13 +9,11 @@ export const errorMiddleware: ErrorRequestHandler = (
   _next,
 ) => {
   if (error instanceof ZodError) {
-    res
-      .status(422)
-      .json({
-        success: false,
-        message: "Validation failed",
-        errors: error.issues,
-      });
+    res.status(422).json({
+      success: false,
+      message: "Validation failed",
+      errors: error.issues,
+    });
     return;
   }
   if (error instanceof HttpError) {

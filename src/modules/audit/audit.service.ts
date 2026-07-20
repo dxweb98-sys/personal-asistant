@@ -26,7 +26,9 @@ export const auditService = {
         action: input.action,
         entityType: input.entityType,
         ...(input.entityId ? { entityId: input.entityId } : {}),
-        ...(input.before !== undefined ? { before: jsonSafe(input.before) } : {}),
+        ...(input.before !== undefined
+          ? { before: jsonSafe(input.before) }
+          : {}),
         ...(input.after !== undefined ? { after: jsonSafe(input.after) } : {}),
         ...(input.metadata ? { metadata: jsonSafe(input.metadata) } : {}),
       },

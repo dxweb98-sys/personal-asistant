@@ -3,15 +3,25 @@ import { prisma } from "../../lib/prisma.js";
 import { auditService } from "../audit/audit.service.js";
 
 const db = prisma as any;
-const normalize = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+const normalize = (value: string) =>
+  value.trim().replace(/\s+/g, " ").toLowerCase();
 
 export const templateService = {
-  list(userId: string, options?: { search?: string; favorite?: boolean; includeInactive?: boolean }) {
+  list(
+    userId: string,
+    options?: {
+      search?: string;
+      favorite?: boolean;
+      includeInactive?: boolean;
+    },
+  ) {
     return db.transactionTemplate.findMany({
       where: {
         userId,
         ...(!options?.includeInactive ? { isActive: true } : {}),
-        ...(options?.favorite !== undefined ? { isFavorite: options.favorite } : {}),
+        ...(options?.favorite !== undefined
+          ? { isFavorite: options.favorite }
+          : {}),
         ...(options?.search
           ? {
               OR: [
@@ -66,14 +76,17 @@ export const templateService = {
     const existing = await db.transactionTemplate.findFirst({
       where: { id: templateId, userId },
     });
-    if (!existing) throw new HttpError(404, "Template transaksi tidak ditemukan");
+    if (!existing)
+      throw new HttpError(404, "Template transaksi tidak ditemukan");
     const name = input.name?.trim().replace(/\s+/g, " ");
     const updated = await db.transactionTemplate.update({
       where: { id: existing.id },
       data: {
         ...(name ? { name, normalizedName: normalize(name) } : {}),
         ...(input.payload !== undefined ? { payload: input.payload } : {}),
-        ...(input.isFavorite !== undefined ? { isFavorite: input.isFavorite } : {}),
+        ...(input.isFavorite !== undefined
+          ? { isFavorite: input.isFavorite }
+          : {}),
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
       },
     });
@@ -91,7 +104,8 @@ export const templateService = {
     const template = await db.transactionTemplate.findFirst({
       where: { id: templateId, userId, isActive: true },
     });
-    if (!template) throw new HttpError(404, "Template transaksi tidak ditemukan");
+    if (!template)
+      throw new HttpError(404, "Template transaksi tidak ditemukan");
     return db.transactionTemplate.update({
       where: { id: template.id },
       data: { usageCount: { increment: 1 }, lastUsedAt: new Date() },
@@ -120,12 +134,20 @@ export const templateService = {
             }
           : {}),
       },
-      orderBy: [{ isFavorite: "desc" }, { lastUsedAt: "desc" }, { usageCount: "desc" }],
+      orderBy: [
+        { isFavorite: "desc" },
+        { lastUsedAt: "desc" },
+        { usageCount: "desc" },
+      ],
       take: options?.limit ?? 10,
     });
   },
 
-  async toggleHistoryFavorite(userId: string, historyId: string, value: boolean) {
+  async toggleHistoryFavorite(
+    userId: string,
+    historyId: string,
+    value: boolean,
+  ) {
     const row = await db.transactionFieldHistory.findFirst({
       where: { id: historyId, userId },
     });
@@ -139,7 +161,9 @@ export const templateService = {
   async createTag(userId: string, nameInput: string) {
     const name = nameInput.trim().replace(/\s+/g, " ");
     return db.tag.upsert({
-      where: { userId_normalizedName: { userId, normalizedName: normalize(name) } },
+      where: {
+        userId_normalizedName: { userId, normalizedName: normalize(name) },
+      },
       create: { userId, name, normalizedName: normalize(name) },
       update: { name },
     });

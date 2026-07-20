@@ -1,12 +1,110 @@
-import { DebtStatus,type Debt } from "../../generated/prisma/client.js";
+import { DebtStatus, type Debt } from "../../generated/prisma/client.js";
 import { prisma } from "../../lib/prisma.js";
-import { moneyToNumber,roundMoney } from "../../common/money.js";
+import { moneyToNumber, roundMoney } from "../../common/money.js";
 import { HttpError } from "../../common/http-error.js";
-const weight={CRITICAL:4,URGENT:3,NORMAL:2,SLOW:1} as const;
-function sort(ds:Debt[],s:"PRIORITY"|"AVALANCHE"|"SNOWBALL"){return [...ds].sort((a,b)=>s==="AVALANCHE"?moneyToNumber(b.interestRateAnnual)-moneyToNumber(a.interestRateAnnual):s==="SNOWBALL"?moneyToNumber(a.remainingPrincipal)-moneyToNumber(b.remainingPrincipal):weight[b.priority as keyof typeof weight]-weight[a.priority as keyof typeof weight]);}
-export async function buildRecommendation(userId:string,input:{monthlyIncome:number;essentialExpenses:number;safetyBuffer:number;strategy:"PRIORITY"|"AVALANCHE"|"SNOWBALL"}){
- const debts=await prisma.debt.findMany({where:{userId,status:{in:[DebtStatus.ACTIVE,DebtStatus.OVERDUE,DebtStatus.SETTLEMENT_PENDING]}}});const available=roundMoney(input.monthlyIncome-input.essentialExpenses-input.safetyBuffer);if(available<=0)throw new HttpError(422,"Belum ada dana aman untuk utang",{available});
- const base=(d:Debt)=>d.paymentPolicy==="FIXED"?moneyToNumber(d.fixedMonthlyAmount):moneyToNumber(d.minimumMonthlyAmount);const allocations=debts.map((d: any)=>({debt:d,amount:Math.min(base(d),moneyToNumber(d.remainingPrincipal))}));let allocated=allocations.reduce((a: number, x: any)=>a+x.amount,0);
- let warning:string|null=null;if(allocated>available){warning="Dana tidak cukup untuk seluruh kewajiban minimum. Prioritaskan kebutuhan pokok, tagihan FIXED/CRITICAL, dan segera negosiasikan utang fleksibel.";for(const x of allocations){if(x.debt.paymentPolicy!=="FIXED")x.amount=0;}allocated=allocations.reduce((a: number, x: any)=>a+x.amount,0);if(allocated>available){const ratio=available/allocated;allocations.forEach((x: any)=>x.amount=roundMoney(x.amount*ratio));allocated=available;}}
- let extra=roundMoney(available-allocated);for(const d of sort(debts,input.strategy)){if(extra<=0)break;const x=allocations.find((a: any)=>a.debt.id===d.id)!;const target=d.paymentPolicy==="FLEXIBLE"?Math.max(x.amount,moneyToNumber(d.targetMonthlyAmount)):moneyToNumber(d.remainingPrincipal);const cap=Math.max(0,Math.min(moneyToNumber(d.remainingPrincipal),target)-x.amount);const add=Math.min(extra,cap);x.amount=roundMoney(x.amount+add);extra=roundMoney(extra-add);}return {safeAvailableForDebt:available,warning,strategy:input.strategy,allocations:allocations.filter((x: any)=>x.amount>0).map((x: any)=>({debtId:x.debt.id,name:x.debt.name,paymentPolicy:x.debt.paymentPolicy,priority:x.debt.priority,recommendedPayment:x.amount,estimatedRemainingPrincipal:roundMoney(moneyToNumber(x.debt.remainingPrincipal)-x.amount),action:x.debt.paymentPolicy==="NEGOTIABLE"?"Bayar sesuai kemampuan atau ajukan negosiasi ulang":x.debt.paymentPolicy==="FIXED"?"Wajib diprioritaskan sesuai jadwal":"Bayar minimal lalu tambah bila ada sisa"})),unallocatedBuffer:extra,disclaimer:"Perhitungan anggaran, bukan nasihat keuangan profesional."};
+const weight = { CRITICAL: 4, URGENT: 3, NORMAL: 2, SLOW: 1 } as const;
+function sort(ds: Debt[], s: "PRIORITY" | "AVALANCHE" | "SNOWBALL") {
+  return [...ds].sort((a, b) =>
+    s === "AVALANCHE"
+      ? moneyToNumber(b.interestRateAnnual) -
+        moneyToNumber(a.interestRateAnnual)
+      : s === "SNOWBALL"
+        ? moneyToNumber(a.remainingPrincipal) -
+          moneyToNumber(b.remainingPrincipal)
+        : weight[b.priority as keyof typeof weight] -
+          weight[a.priority as keyof typeof weight],
+  );
+}
+export async function buildRecommendation(
+  userId: string,
+  input: {
+    monthlyIncome: number;
+    essentialExpenses: number;
+    safetyBuffer: number;
+    strategy: "PRIORITY" | "AVALANCHE" | "SNOWBALL";
+  },
+) {
+  const debts = await prisma.debt.findMany({
+    where: {
+      userId,
+      status: {
+        in: [
+          DebtStatus.ACTIVE,
+          DebtStatus.OVERDUE,
+          DebtStatus.SETTLEMENT_PENDING,
+        ],
+      },
+    },
+  });
+  const available = roundMoney(
+    input.monthlyIncome - input.essentialExpenses - input.safetyBuffer,
+  );
+  if (available <= 0)
+    throw new HttpError(422, "Belum ada dana aman untuk utang", { available });
+  const base = (d: Debt) =>
+    d.paymentPolicy === "FIXED"
+      ? moneyToNumber(d.fixedMonthlyAmount)
+      : moneyToNumber(d.minimumMonthlyAmount);
+  const allocations = debts.map((d: any) => ({
+    debt: d,
+    amount: Math.min(base(d), moneyToNumber(d.remainingPrincipal)),
+  }));
+  let allocated = allocations.reduce((a: number, x: any) => a + x.amount, 0);
+  let warning: string | null = null;
+  if (allocated > available) {
+    warning =
+      "Dana tidak cukup untuk seluruh kewajiban minimum. Prioritaskan kebutuhan pokok, tagihan FIXED/CRITICAL, dan segera negosiasikan utang fleksibel.";
+    for (const x of allocations) {
+      if (x.debt.paymentPolicy !== "FIXED") x.amount = 0;
+    }
+    allocated = allocations.reduce((a: number, x: any) => a + x.amount, 0);
+    if (allocated > available) {
+      const ratio = available / allocated;
+      allocations.forEach(
+        (x: any) => (x.amount = roundMoney(x.amount * ratio)),
+      );
+      allocated = available;
+    }
+  }
+  let extra = roundMoney(available - allocated);
+  for (const d of sort(debts, input.strategy)) {
+    if (extra <= 0) break;
+    const x = allocations.find((a: any) => a.debt.id === d.id)!;
+    const target =
+      d.paymentPolicy === "FLEXIBLE"
+        ? Math.max(x.amount, moneyToNumber(d.targetMonthlyAmount))
+        : moneyToNumber(d.remainingPrincipal);
+    const cap = Math.max(
+      0,
+      Math.min(moneyToNumber(d.remainingPrincipal), target) - x.amount,
+    );
+    const add = Math.min(extra, cap);
+    x.amount = roundMoney(x.amount + add);
+    extra = roundMoney(extra - add);
+  }
+  return {
+    safeAvailableForDebt: available,
+    warning,
+    strategy: input.strategy,
+    allocations: allocations
+      .filter((x: any) => x.amount > 0)
+      .map((x: any) => ({
+        debtId: x.debt.id,
+        name: x.debt.name,
+        paymentPolicy: x.debt.paymentPolicy,
+        priority: x.debt.priority,
+        recommendedPayment: x.amount,
+        estimatedRemainingPrincipal: roundMoney(
+          moneyToNumber(x.debt.remainingPrincipal) - x.amount,
+        ),
+        action:
+          x.debt.paymentPolicy === "NEGOTIABLE"
+            ? "Bayar sesuai kemampuan atau ajukan negosiasi ulang"
+            : x.debt.paymentPolicy === "FIXED"
+              ? "Wajib diprioritaskan sesuai jadwal"
+              : "Bayar minimal lalu tambah bila ada sisa",
+      })),
+    unallocatedBuffer: extra,
+    disclaimer: "Perhitungan anggaran, bukan nasihat keuangan profesional.",
+  };
 }

@@ -38,9 +38,12 @@ export const defaultPreference = {
 type PreferenceDefaults = typeof defaultPreference;
 
 export type PreferencePatch = {
-  [K in Exclude<keyof PreferenceDefaults, "telegramTheme" | "notificationConfig" | "reportConfig">]?:
-    | PreferenceDefaults[K]
-    | undefined;
+  [
+    K in Exclude<
+      keyof PreferenceDefaults,
+      "telegramTheme" | "notificationConfig" | "reportConfig"
+    >
+  ]?: PreferenceDefaults[K] | undefined;
 } & {
   telegramTheme?: string | undefined;
   notificationConfig?: Record<string, unknown> | null | undefined;
@@ -61,19 +64,27 @@ function normalizePreference(row: any) {
     telegramTheme: theme.key,
     timeZone: row?.timeZone || "Asia/Jakarta",
     weekStartsOn:
-      Number.isInteger(row?.weekStartsOn) && row.weekStartsOn >= 0 && row.weekStartsOn <= 6
+      Number.isInteger(row?.weekStartsOn) &&
+      row.weekStartsOn >= 0 &&
+      row.weekStartsOn <= 6
         ? row.weekStartsOn
         : 1,
   };
 }
 
-async function validateDefaultAccount(userId: string, accountId: string | null) {
+async function validateDefaultAccount(
+  userId: string,
+  accountId: string | null,
+) {
   if (!accountId) return;
   const account = await (prisma as any).financialAccount.findFirst({
     where: { id: accountId, userId, status: "ACTIVE", isActive: true },
   });
   if (!account) {
-    throw new HttpError(400, "Default account harus merupakan account aktif milik pengguna");
+    throw new HttpError(
+      400,
+      "Default account harus merupakan account aktif milik pengguna",
+    );
   }
 }
 
@@ -112,8 +123,14 @@ export const settingsService = {
     if (data.defaultAccountId !== undefined) {
       await validateDefaultAccount(userId, data.defaultAccountId);
     }
-    if (data.weekStartsOn !== undefined && (data.weekStartsOn < 0 || data.weekStartsOn > 6)) {
-      throw new HttpError(400, "weekStartsOn harus berada pada rentang 0 sampai 6");
+    if (
+      data.weekStartsOn !== undefined &&
+      (data.weekStartsOn < 0 || data.weekStartsOn > 6)
+    ) {
+      throw new HttpError(
+        400,
+        "weekStartsOn harus berada pada rentang 0 sampai 6",
+      );
     }
     if (data.language && !allowedLanguages.has(data.language)) {
       throw new HttpError(400, "Bahasa belum didukung");
