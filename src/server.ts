@@ -4,12 +4,15 @@ import { prisma } from "./lib/prisma.js";
 import {
   startTelegramBot,
   stopTelegramBot,
-} from "./modules/telegram/telegram.bot.js";
+} from "./modules/telegram/telegram.v2.bot.js";
 
 const server = app.listen(env.PORT, () =>
-  console.log(`Freedom Debt Agent API running at http://localhost:${env.PORT}`),
+  console.log(`Personal Finance OS API running at http://localhost:${env.PORT}`),
 );
-void startTelegramBot();
+
+startTelegramBot().catch((error) => {
+  console.error("Failed to start Telegram bot", error);
+});
 
 async function shutdown(signal: string) {
   console.log(`${signal} received, shutting down...`);
@@ -19,5 +22,6 @@ async function shutdown(signal: string) {
     process.exit(0);
   });
 }
+
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
