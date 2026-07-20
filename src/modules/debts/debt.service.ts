@@ -3,7 +3,6 @@ import {
   DebtStatus,
   InstallmentStatus,
   LateFeeSettlementPolicy,
-  type Prisma,
 } from "../../generated/prisma/client.js";
 import { prisma } from "../../lib/prisma.js";
 import { HttpError } from "../../common/http-error.js";
@@ -198,7 +197,7 @@ export const debtService = {
   },
   async createInstallment(userId: string, debtId: string, input: any) {
     const debt = await this.find(userId, debtId);
-    if ([DebtStatus.PAID, DebtStatus.CANCELLED].includes(debt.status))
+    if (debt.status === DebtStatus.PAID || debt.status === DebtStatus.CANCELLED)
       throw new HttpError(409, `Utang berstatus ${debt.status}`);
     return prisma.debtInstallment.create({
       data: { debtId, ...input },
