@@ -1,0 +1,1360 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { Markup, Telegraf } from "telegraf";
+import { env } from "../../config/env.js";
+import { prisma } from "../../lib/prisma.js";
+import { debtService } from "../debts/debt.service.js";
+import { financeService } from "../finance/finance.service.js";
+import { investmentService } from "../investments/investment.service.js";
+import { settingsService } from "../settings/settings.service.js";
+import { progress } from "./telegram.format.js";
+import { upsertExchangeRate } from "../../common/fx.js";
+import { getTelegramTheme, listTelegramThemes } from "./themes/index.js";
+import { fxProviderService } from "../settings/fx-provider.service.js";
+
+let bot: Telegraf | null = null;
+
+type TelegramLanguage = "id" | "en";
+type TelegramCountry = "ID" | "US" | "SG" | "GB" | "JP" | "DE";
+type TelegramThemeName =
+  | "FRIENDLY"
+  | "MOTIVATIONAL"
+  | "PROFESSIONAL"
+  | "MINIMAL"
+  | "CALM"
+  | "PLAYFUL"
+  | "GAMIFIED"
+  | "FINANCIAL_COACH";
+
+type TelegramProfile = {
+  country: TelegramCountry;
+  language: TelegramLanguage;
+  currency: string;
+  theme: TelegramThemeName;
+  onboardingCompleted: boolean;
+};
+
+type OnboardingDraft = Partial<TelegramProfile>;
+
+const wizard = new Map<number, Wizard>();
+const onboardingDraft = new Map<number, OnboardingDraft>();
+const profileFile = join(process.cwd(), "data", "telegram-profiles.json");
+let profileCache: Record<string, TelegramProfile> | null = null;
+
+const html = (value: unknown): string =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+async function loadProfiles(): Promise<Record<string, TelegramProfile>> {
+  if (profileCache) return profileCache;
+
+  try {
+    profileCache = JSON.parse(await readFile(profileFile, "utf8")) as Record<
+      string,
+      TelegramProfile
+    >;
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") {
+      console.error("Gagal membaca profil Telegram:", error);
+    }
+    profileCache = {};
+  }
+
+  return profileCache;
+}
+
+async function getTelegramProfile(
+  chatId: number,
+): Promise<TelegramProfile | null> {
+  const profiles = await loadProfiles();
+  return profiles[String(chatId)] ?? null;
+}
+
+async function saveTelegramProfile(
+  chatId: number,
+  patch: Partial<TelegramProfile>,
+): Promise<TelegramProfile> {
+  const profiles = await loadProfiles();
+  const previous = profiles[String(chatId)] ?? {
+    country: "ID",
+    language: "id",
+    currency: "IDR",
+    theme: "FRIENDLY",
+    onboardingCompleted: false,
+  };
+
+  const next = { ...previous, ...patch };
+  profiles[String(chatId)] = next;
+  await mkdir(dirname(profileFile), { recursive: true });
+  await writeFile(profileFile, JSON.stringify(profiles, null, 2), "utf8");
+  return next;
+}
+
+const countryCurrency: Record<TelegramCountry, string> = {
+  ID: "IDR",
+  US: "USD",
+  SG: "SGD",
+  GB: "GBP",
+  JP: "JPY",
+  DE: "EUR",
+};
+
+const countryName: Record<TelegramCountry, string> = {
+  ID: "Indonesia",
+  US: "United States",
+  SG: "Singapore",
+  GB: "United Kingdom",
+  JP: "Japan",
+  DE: "European Union",
+};
+
+const languageName: Record<TelegramLanguage, string> = {
+  id: "Bahasa Indonesia",
+  en: "English",
+};
+
+const textByLanguage = {
+  id: {
+    chooseCountry: "🌍 Pilih negara atau wilayah utama kamu:",
+    chooseLanguage: "🗣 Pilih bahasa yang ingin digunakan:",
+    chooseCurrency:
+      "💱 Pilih mata uang utama untuk dashboard. Data asli aset tetap memakai mata uang masing-masing.",
+    chooseTheme:
+      "🎨 Pilih tema bot. Tema dapat diubah lagi kapan saja melalui Pengaturan.",
+    completed:
+      "✅ Konfigurasi selesai. Kamu sekarang bisa mulai mencatat keuangan melalui menu Telegram.",
+  },
+  en: {
+    chooseCountry: "🌍 Choose your main country or region:",
+    chooseLanguage: "🗣 Choose the language you want to use:",
+    chooseCurrency:
+      "💱 Choose the dashboard base currency. Original asset currencies will not be changed.",
+    chooseTheme:
+      "🎨 Choose a bot theme. You can change it later from Settings.",
+    completed:
+      "✅ Configuration completed. You can now record your finances from Telegram.",
+  },
+} as const;
+
+function langText(language: TelegramLanguage) {
+  return textByLanguage[language];
+}
+
+type Wizard =
+  | { kind: "MANUAL_PRICE"; instrumentId: string; symbol: string }
+  | { kind: "INCOME_AMOUNT" }
+  | { kind: "INCOME_ACCOUNT"; amount: number }
+  | {
+      kind: "INCOME_NOTE";
+      amount: number;
+      accountId: string;
+      accountName: string;
+    }
+  | { kind: "EXPENSE_AMOUNT" }
+  | { kind: "EXPENSE_ACCOUNT"; amount: number }
+  | {
+      kind: "EXPENSE_NOTE";
+      amount: number;
+      accountId: string;
+      accountName: string;
+    }
+  | { kind: "PAY_DEBT"; debtId: string; debtName: string }
+  | { kind: "FX_RATE"; baseCurrency: string; quoteCurrency: string };
+
+const currency = (n: number, code = "IDR") => {
+  const normalizedCode = String(code || "IDR").toUpperCase();
+  try {
+    return new Intl.NumberFormat(normalizedCode === "IDR" ? "id-ID" : "en-US", {
+      style: "currency",
+      currency: normalizedCode,
+      maximumFractionDigits: normalizedCode === "IDR" ? 0 : 8,
+    }).format(Number(n) || 0);
+  } catch {
+    return `${normalizedCode} ${new Intl.NumberFormat("en-US", {
+      maximumFractionDigits: 8,
+    }).format(Number(n) || 0)}`;
+  }
+};
+const num = (text: string) =>
+  Number(
+    text
+      .replace(/[^0-9.,-]/g, "")
+      .replace(/\./g, "")
+      .replace(",", "."),
+  );
+const nowLabel = () =>
+  new Intl.DateTimeFormat("id-ID", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Jakarta",
+  }).format(new Date());
+
+async function userFor(ctx: any) {
+  const chatId = BigInt(ctx.chat.id);
+  const username = ctx.from?.username ?? null;
+  const name =
+    [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(" ") ||
+    username ||
+    "Pengguna";
+  const user = await prisma.user.upsert({
+    where: { telegramChatId: chatId },
+    create: { name, telegramChatId: chatId, telegramUsername: username },
+    update: { name, telegramUsername: username },
+  });
+  await settingsService.get(user.id);
+  return user;
+}
+
+const homeKeyboard = (themeKey = "FRIENDLY") => {
+  const t = getTelegramTheme(themeKey);
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback(t.labels.expense, "flow:expense"),
+      Markup.button.callback(t.labels.income, "flow:income"),
+    ],
+    [
+      Markup.button.callback(t.labels.dashboard, "menu:dashboard"),
+      Markup.button.callback(t.labels.portfolio, "menu:portfolio"),
+    ],
+    [
+      Markup.button.callback(t.labels.debt, "menu:debt"),
+      Markup.button.callback(t.labels.accounts, "menu:accounts"),
+    ],
+    [
+      Markup.button.callback(t.labels.settings, "menu:settings"),
+      Markup.button.callback(t.labels.help, "menu:help"),
+    ],
+  ]);
+};
+
+const backHome = () =>
+  Markup.inlineKeyboard([
+    [Markup.button.callback("🏠 Kembali ke Beranda", "menu:home")],
+  ]);
+
+function motivation(pref: any) {
+  if (!pref.showMotivation) return "";
+  const messages = getTelegramTheme(pref.telegramTheme).motivation;
+  if (!messages.length) return "";
+  return `\n\n<i>${html(messages[new Date().getDate() % messages.length]!)}</i>`;
+}
+
+async function sendWelcome(ctx: any) {
+  const user = await userFor(ctx);
+  await ctx.reply(
+    `👋 <b>SELAMAT DATANG DI PERSONAL FINANCE OS</b>
+
+Halo, <b>${html(user.name)}</b>!
+
+Bot ini membantu mencatat pemasukan, pengeluaran, utang, investasi, platform, harga aset, kurs, dan perjalanan menuju financial freedom.
+
+Semua konfigurasi awal dilakukan langsung melalui Telegram.`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🚀 Mulai Konfigurasi", "onboarding:start")],
+      ]),
+    },
+  );
+}
+
+async function requireOnboarding(ctx: any) {
+  const user = await userFor(ctx);
+  const pref: any = await settingsService.get(user.id);
+  if (!pref.onboardingCompleted) {
+    await sendWelcome(ctx);
+    return null;
+  }
+  return { user, pref };
+}
+
+function themeKeyboard(prefix = "set:theme") {
+  const rows: any[] = [];
+  const all = listTelegramThemes();
+  for (let i = 0; i < all.length; i += 2)
+    rows.push(
+      all
+        .slice(i, i + 2)
+        .map((t: any) =>
+          Markup.button.callback(`${t.emoji} ${t.name}`, `${prefix}:${t.key}`),
+        ),
+    );
+  return Markup.inlineKeyboard(rows);
+}
+
+async function sendHome(ctx: any, edit = false) {
+  const ready = await requireOnboarding(ctx);
+  if (!ready) return;
+  const { user, pref } = ready;
+  const theme = getTelegramTheme(pref.telegramTheme);
+  const cf = await financeService.cashflow(
+    user.id,
+    new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+    new Date(),
+  );
+  const text = `${theme.emoji} <b>${html(theme.homeTitle)}</b>\n\n${html(theme.greeting(user.name))}\n\n📅 ${html(nowLabel())}\n📥 Pemasukan bulan ini: <b>${html(currency(cf.income, pref.baseCurrency))}</b>\n📤 Pengeluaran bulan ini: <b>${html(currency(cf.expense, pref.baseCurrency))}</b>\n🧭 Arus kas bersih: <b>${html(currency(cf.netCashFlow, pref.baseCurrency))}</b>${motivation(pref)}\n\nPilih aktivitas di bawah:`;
+  if (edit)
+    await ctx.editMessageText(text, {
+      parse_mode: "HTML",
+      ...homeKeyboard(pref.telegramTheme),
+    });
+  else
+    await ctx.reply(text, {
+      parse_mode: "HTML",
+      ...homeKeyboard(pref.telegramTheme),
+    });
+}
+
+async function sendAccounts(
+  ctx: any,
+  chooseFor?: "income" | "expense",
+  amount?: number,
+) {
+  const u = await userFor(ctx);
+  const accounts = await financeService.listAccounts(u.id);
+  if (!accounts.length) {
+    await ctx.reply(
+      "🏦 Belum ada akun keuangan. Tambahkan lewat REST API terlebih dahulu, lalu kembali ke menu ini.",
+      { ...backHome() },
+    );
+    return;
+  }
+  const rows = accounts.map((a: any) => [
+    Markup.button.callback(
+      `${a.type === "CASH" ? "💵" : a.type === "BANK" ? "🏦" : "👛"} ${a.name} • ${currency(Number(a.currentBalance), a.currency)}`,
+      chooseFor ? `choose:${chooseFor}:${a.id}:${amount}` : `account:${a.id}`,
+    ),
+  ]);
+  rows.push([Markup.button.callback("🏠 Beranda", "menu:home")]);
+  await ctx.reply(
+    chooseFor ? "Pilih akun yang digunakan:" : "🏦 <b>Daftar Akun Keuangan</b>",
+    { parse_mode: "HTML", ...Markup.inlineKeyboard(rows) },
+  );
+}
+
+async function sendPortfolio(ctx: any) {
+  const u = await userFor(ctx);
+  const p: any = await investmentService.portfolio(u.id);
+  const fresh = p.items.filter((x: any) =>
+    ["MANUAL_PRICE", "MARKET_PRICE"].includes(x.valuationStatus),
+  );
+  const stale = p.items.filter((x: any) => x.valuationStatus === "STALE_PRICE");
+  const unpriced = p.items.filter((x: any) =>
+    ["PURCHASE_PRICE_ONLY", "UNPRICED"].includes(x.valuationStatus),
+  );
+  const lines = p.items
+    .slice(0, 8)
+    .map((x: any) => {
+      const icon =
+        x.type === "STOCK"
+          ? "📈"
+          : x.type === "CRYPTO"
+            ? "🪙"
+            : x.type === "GOLD"
+              ? "🥇"
+              : "💼";
+      const status =
+        x.valuationStatus === "STALE_PRICE"
+          ? "🟡 stale"
+          : x.currentPrice == null
+            ? "⚪ harga belum ada"
+            : "🟢 fresh";
+      const value =
+        x.marketValue == null
+          ? `Modal ${currency(x.costBasis)}`
+          : `${currency(x.marketValue)} • ${x.unrealizedProfit >= 0 ? "+" : ""}${currency(x.unrealizedProfit)}`;
+      return `${icon} <b>${html(x.symbol)}</b> — ${html(status)}\n${html(value)}`;
+    })
+    .join("\n\n");
+  const text = `📊 <b>PORTFOLIO SAYA</b>\n\n✅ Nilai pasar terkonfirmasi: <b>${html(currency(p.confirmedMarketValue, p.displayCurrency))}</b>\n🕒 Estimasi harga lama: <b>${html(currency(p.estimatedMarketValue, p.displayCurrency))}</b>\n🧾 Modal belum tervaluasi: <b>${html(currency(p.unpricedInvestmentCost, p.displayCurrency))}</b>\n\n🟢 Fresh: ${fresh.length} aset\n🟡 Stale: ${stale.length} aset\n⚪ Belum ada harga: ${unpriced.length} aset\n\n${lines || "Belum ada investasi."}`;
+  const buttons = [
+    [
+      Markup.button.callback("🔄 Update Harga", "price:menu"),
+      Markup.button.callback("➕ Tambah Investasi", "invest:add-help"),
+    ],
+    [
+      Markup.button.callback("🏦 Platform", "platform:list"),
+      Markup.button.callback("⚙️ Pengaturan Harga", "settings:price"),
+    ],
+    [Markup.button.callback("🏠 Beranda", "menu:home")],
+  ];
+  await ctx.reply(text, {
+    parse_mode: "HTML",
+    ...Markup.inlineKeyboard(buttons),
+  });
+}
+
+async function sendDashboard(ctx: any) {
+  const u = await userFor(ctx);
+  const [cf, p, debts, accounts] = await Promise.all([
+    financeService.cashflow(
+      u.id,
+      new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+      new Date(),
+    ),
+    investmentService.portfolio(u.id),
+    debtService.list(u.id),
+    financeService.listAccounts(u.id),
+  ]);
+
+  const displayCurrency = (p as any).displayCurrency ?? "IDR";
+  const liquid = accounts
+    .filter((a: any) => ["CASH", "BANK", "E_WALLET"].includes(a.type))
+    .filter((a: any) => a.currency === displayCurrency)
+    .reduce((sum: number, a: any) => sum + Number(a.currentBalance), 0);
+  const liability = debts
+    .filter((d: any) => (d.currency ?? "IDR") === displayCurrency)
+    .reduce(
+      (sum: number, debt: any) => sum + Number(debt.remainingPrincipal),
+      0,
+    );
+  const confirmedNetWorth =
+    liquid + Number((p as any).confirmedMarketValue) - liability;
+  const estimatedNetWorth =
+    confirmedNetWorth + Number((p as any).estimatedMarketValue);
+  const savingsRate =
+    cf.income > 0
+      ? ((cf.income - cf.expense - cf.debtPayment) / cf.income) * 100
+      : 0;
+
+  const text = `🧭 <b>FINANCIAL SNAPSHOT</b>
+
+💵 Aset likuid terkonfirmasi: <b>${html(currency(liquid, displayCurrency))}</b>
+📈 Investasi terkonfirmasi: <b>${html(currency(Number((p as any).confirmedMarketValue), displayCurrency))}</b>
+💳 Kewajiban terkonfirmasi: <b>${html(currency(liability, displayCurrency))}</b>
+
+🧮 Net worth terkonfirmasi: <b>${html(currency(confirmedNetWorth, displayCurrency))}</b>
+🔭 Estimasi termasuk harga stale: <b>${html(currency(estimatedNetWorth, displayCurrency))}</b>
+
+📥 Income: ${html(currency(cf.income, displayCurrency))}
+📤 Expense: ${html(currency(cf.expense, displayCurrency))}
+💸 Bayar utang: ${html(currency(cf.debtPayment, displayCurrency))}
+💡 Saving rate: <b>${html(savingsRate.toFixed(1))}%</b>
+
+${savingsRate < 10 ? "⚠️ Ruang menabung masih tipis. Fokus pada pengeluaran yang paling sering berulang." : "✅ Arus kasmu cukup sehat bulan ini. Pertahankan ritmenya."}`;
+
+  await ctx.reply(text, { parse_mode: "HTML", ...backHome() });
+}
+
+async function sendSettings(ctx: any) {
+  const u = await userFor(ctx);
+  const p: any = await settingsService.get(u.id);
+  const profile = await getTelegramProfile(ctx.chat.id);
+  const selectedCountry = profile?.country ?? "ID";
+  const selectedLanguage = profile?.language ?? "id";
+  const text = `⚙️ <b>PENGATURAN PERSONAL</b>
+
+🌍 Negara: <b>${html(countryName[selectedCountry])}</b>
+🗣 Bahasa: <b>${html(languageName[selectedLanguage])}</b>
+💱 Mata uang tampilan: <b>${html(p.baseCurrency)}</b>
+💾 Penyimpanan harga: <b>${html(p.priceStorageMode)}</b>
+❓ Konfirmasi sebelum update: <b>${p.confirmBeforePriceRefresh ? "Aktif" : "Nonaktif"}</b>
+📸 Snapshot setelah update: <b>${p.createSnapshotAfterRefresh ? "Aktif" : "Nonaktif"}</b>
+🎨 Tema bot: <b>${html(p.telegramTheme)}</b>
+✨ Motivasi: <b>${p.showMotivation ? "Aktif" : "Nonaktif"}</b>
+
+Batas harga stale:
+📈 Saham ${p.stockStaleHours} jam
+🪙 Crypto ${p.cryptoStaleHours} jam
+🥇 Emas ${p.goldStaleHours} jam`;
+  await ctx.reply(text, {
+    parse_mode: "HTML",
+    ...Markup.inlineKeyboard([
+      [
+        Markup.button.callback("🌍 Negara", "settings:country"),
+        Markup.button.callback("🗣 Bahasa", "settings:language"),
+      ],
+      [
+        Markup.button.callback("💱 Mata Uang Utama", "settings:currency"),
+        Markup.button.callback("🌐 Update Kurs", "fx:auto:preview"),
+      ],
+      [
+        Markup.button.callback("✍️ Kurs Manual", "settings:fx"),
+        Markup.button.callback("📋 Kurs Tersimpan", "fx:list"),
+      ],
+      [
+        Markup.button.callback("💾 Mode Harga", "settings:storage"),
+        Markup.button.callback("❓ Konfirmasi", "settings:confirm"),
+      ],
+      [
+        Markup.button.callback("📸 Snapshot", "settings:snapshot"),
+        Markup.button.callback("✨ Motivasi", "settings:motivation"),
+      ],
+      [
+        Markup.button.callback("🎨 Tema", "settings:theme"),
+        Markup.button.callback("⏱ Batas Stale", "settings:stale"),
+      ],
+      [Markup.button.callback("🏠 Beranda", "menu:home")],
+    ]),
+  });
+}
+
+async function sendDebts(ctx: any) {
+  const u = await userFor(ctx);
+  const debts: any[] = await debtService.list(u.id);
+  const rows = debts.map((d: any) => [
+    Markup.button.callback(
+      `${d.status === "OVERDUE" ? "🚨" : "💳"} ${d.name} • ${currency(Number(d.remainingPrincipal))}`,
+      `debt:${d.id}`,
+    ),
+  ]);
+  rows.push([Markup.button.callback("🏠 Beranda", "menu:home")]);
+  await ctx.reply(
+    debts.length
+      ? "💳 <b>UTANG &amp; TAGIHAN</b>\n\nPilih utang untuk melihat detail atau mencatat pembayaran:"
+      : "🎉 Belum ada utang aktif.",
+    { parse_mode: "HTML", ...Markup.inlineKeyboard(rows) },
+  );
+}
+
+export async function startTelegramBot() {
+  if (!env.TELEGRAM_ENABLED || !env.TELEGRAM_BOT_TOKEN) return;
+  bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
+
+  bot.start(async (ctx: any) => {
+    const u = await userFor(ctx);
+    const p: any = await settingsService.get(u.id);
+    if (p.onboardingCompleted) return sendHome(ctx);
+    return sendWelcome(ctx);
+  });
+
+  bot.action("onboarding:start", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    onboardingDraft.set(ctx.chat!.id, {});
+    await ctx.reply(langText("id").chooseCountry, {
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("🇮🇩 Indonesia", "onboarding:country:ID"),
+          Markup.button.callback("🇺🇸 United States", "onboarding:country:US"),
+        ],
+        [
+          Markup.button.callback("🇸🇬 Singapore", "onboarding:country:SG"),
+          Markup.button.callback("🇬🇧 United Kingdom", "onboarding:country:GB"),
+        ],
+        [
+          Markup.button.callback("🇯🇵 Japan", "onboarding:country:JP"),
+          Markup.button.callback("🇪🇺 Europe", "onboarding:country:DE"),
+        ],
+      ]),
+    });
+  });
+
+  bot.action(/^onboarding:country:(ID|US|SG|GB|JP|DE)$/, async (ctx: any) => {
+    const country = ctx.match[1] as TelegramCountry;
+    const draft = onboardingDraft.get(ctx.chat!.id) ?? {};
+    onboardingDraft.set(ctx.chat!.id, { ...draft, country });
+    await saveTelegramProfile(ctx.chat!.id, { country });
+    await ctx.answerCbQuery(`Negara: ${countryName[country]}`);
+    await ctx.reply(langText("id").chooseLanguage, {
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback(
+            "🇮🇩 Bahasa Indonesia",
+            "onboarding:language:id",
+          ),
+          Markup.button.callback("🇬🇧 English", "onboarding:language:en"),
+        ],
+      ]),
+    });
+  });
+
+  bot.action(/^onboarding:language:(id|en)$/, async (ctx: any) => {
+    const language = ctx.match[1] as TelegramLanguage;
+    const draft = onboardingDraft.get(ctx.chat!.id) ?? {};
+    const country = (draft.country ?? "ID") as TelegramCountry;
+    const suggestedCurrency = countryCurrency[country];
+    onboardingDraft.set(ctx.chat!.id, { ...draft, language });
+    await saveTelegramProfile(ctx.chat!.id, { language });
+    await ctx.answerCbQuery(languageName[language]);
+    await ctx.reply(langText(language).chooseCurrency, {
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback(
+            `⭐ ${suggestedCurrency}`,
+            `onboarding:currency:${suggestedCurrency}`,
+          ),
+        ],
+        [
+          Markup.button.callback("🇮🇩 IDR", "onboarding:currency:IDR"),
+          Markup.button.callback("🇺🇸 USD", "onboarding:currency:USD"),
+        ],
+        [
+          Markup.button.callback("🇸🇬 SGD", "onboarding:currency:SGD"),
+          Markup.button.callback("🇪🇺 EUR", "onboarding:currency:EUR"),
+        ],
+        [
+          Markup.button.callback("🇯🇵 JPY", "onboarding:currency:JPY"),
+          Markup.button.callback("🇬🇧 GBP", "onboarding:currency:GBP"),
+        ],
+      ]),
+    });
+  });
+
+  bot.action(
+    /^onboarding:currency:(IDR|USD|SGD|EUR|JPY|GBP)$/,
+    async (ctx: any) => {
+      const u = await userFor(ctx);
+      const selectedCurrency = ctx.match[1];
+      const draft = onboardingDraft.get(ctx.chat!.id) ?? {};
+      const language = (draft.language ?? "id") as TelegramLanguage;
+      onboardingDraft.set(ctx.chat!.id, {
+        ...draft,
+        currency: selectedCurrency,
+      });
+      await saveTelegramProfile(ctx.chat!.id, {
+        currency: selectedCurrency,
+      });
+      await settingsService.update(u.id, {
+        baseCurrency: selectedCurrency,
+      } as any);
+      await ctx.answerCbQuery(`Currency: ${selectedCurrency}`);
+      await ctx.reply(langText(language).chooseTheme, {
+        ...themeKeyboard("onboarding:theme"),
+      });
+    },
+  );
+
+  bot.action(
+    /^onboarding:theme:(FRIENDLY|MOTIVATIONAL|PROFESSIONAL|MINIMAL|CALM|PLAYFUL|GAMIFIED|FINANCIAL_COACH)$/,
+    async (ctx: any) => {
+      const u = await userFor(ctx);
+      const theme = ctx.match[1] as TelegramThemeName;
+      const draft = onboardingDraft.get(ctx.chat!.id) ?? {};
+      const language = (draft.language ?? "id") as TelegramLanguage;
+      const country = (draft.country ?? "ID") as TelegramCountry;
+      const selectedCurrency = draft.currency ?? countryCurrency[country];
+
+      await settingsService.update(u.id, {
+        telegramTheme: theme,
+        baseCurrency: selectedCurrency,
+        onboardingCompleted: true,
+      } as any);
+      await saveTelegramProfile(ctx.chat!.id, {
+        country,
+        language,
+        currency: selectedCurrency,
+        theme,
+        onboardingCompleted: true,
+      });
+      onboardingDraft.delete(ctx.chat!.id);
+
+      await ctx.answerCbQuery("Konfigurasi selesai");
+      await ctx.reply(
+        `${langText(language).completed}\n\n🌍 ${html(countryName[country])}\n🗣 ${html(languageName[language])}\n💱 ${html(selectedCurrency)}\n🎨 ${html(getTelegramTheme(theme).name)}\n\nHarga investasi tidak diperbarui otomatis. Gunakan tombol Update Harga saat diperlukan.`,
+        { parse_mode: "HTML" },
+      );
+      await sendHome(ctx);
+    },
+  );
+  bot.command("setup", async (ctx: any) => {
+    const u = await userFor(ctx);
+    onboardingDraft.delete(ctx.chat.id);
+    await settingsService.update(u.id, { onboardingCompleted: false } as any);
+    await saveTelegramProfile(ctx.chat.id, {
+      onboardingCompleted: false,
+    });
+    await ctx.reply(
+      "🔄 Konfigurasi Telegram direset. Tekan tombol di bawah untuk mengatur negara, bahasa, mata uang, dan tema lagi.",
+      {
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🚀 Mulai Konfigurasi", "onboarding:start")],
+        ]),
+      },
+    );
+  });
+  bot.command("menu", async (ctx: any) => sendHome(ctx));
+  bot.command("portfolio", async (ctx: any) => sendPortfolio(ctx));
+  bot.command("cashflow", async (ctx: any) => sendDashboard(ctx));
+  bot.command("settings", async (ctx: any) => sendSettings(ctx));
+
+  bot.action("menu:home", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await sendHome(ctx, true);
+  });
+  bot.action("menu:dashboard", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await sendDashboard(ctx);
+  });
+  bot.action("menu:portfolio", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await sendPortfolio(ctx);
+  });
+  bot.action("menu:debt", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await sendDebts(ctx);
+  });
+  bot.action("menu:accounts", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await sendAccounts(ctx);
+  });
+  bot.action("menu:settings", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await sendSettings(ctx);
+  });
+  bot.action("menu:help", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      "Gunakan tombol menu untuk mencatat income, expense, melihat portfolio, utang, dan pengaturan. Command cepat: /menu, /portfolio, /cashflow, /settings.",
+      { ...backHome() },
+    );
+  });
+
+  bot.action("flow:income", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    wizard.set(ctx.chat!.id, { kind: "INCOME_AMOUNT" });
+    await ctx.reply(
+      "💰 <b>CATAT PENDAPATAN</b>\n\nBerapa nominal yang kamu terima?\nContoh: <code>7500000</code>",
+      { parse_mode: "HTML" },
+    );
+  });
+  bot.action("flow:expense", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    wizard.set(ctx.chat!.id, { kind: "EXPENSE_AMOUNT" });
+    await ctx.reply(
+      "💸 <b>CATAT PENGELUARAN</b>\n\nBerapa nominal yang kamu keluarkan?\nContoh: <code>45000</code>",
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.action(/^choose:(income|expense):([^:]+):(.+)$/, async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const [, type, accountId, amountRaw] = ctx.match;
+    const u = await userFor(ctx);
+    const account = await prisma.financialAccount.findFirst({
+      where: { id: accountId, userId: u.id },
+    });
+    if (!account) return ctx.reply("Akun tidak ditemukan.");
+    const amount = Number(amountRaw);
+    wizard.set(ctx.chat!.id, {
+      kind: type === "income" ? "INCOME_NOTE" : "EXPENSE_NOTE",
+      amount,
+      accountId,
+      accountName: account.name,
+    } as Wizard);
+    await ctx.reply(
+      `${type === "income" ? "💰" : "💸"} Nominal <b>${html(currency(amount, account.currency))}</b> melalui <b>${html(account.name)}</b>\n\nTulis keterangan singkat, misalnya: ${type === "income" ? "Gaji Juli" : "Makan siang"}`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.action("price:menu", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const u = await userFor(ctx);
+    const instruments: any[] = await investmentService.listInstruments(u.id);
+    const rows = instruments.map((x: any) => [
+      Markup.button.callback(
+        `${x.type === "STOCK" ? "📈" : x.type === "CRYPTO" ? "🪙" : "💼"} ${x.symbol}`,
+        `price:manual:${x.id}`,
+      ),
+    ]);
+    rows.push([Markup.button.callback("🏠 Beranda", "menu:home")]);
+    await ctx.reply(
+      "🔄 <b>UPDATE HARGA ASET</b>\n\nHarga hanya diperbarui saat kamu memilih aset. Tidak ada scheduler otomatis.",
+      { parse_mode: "HTML", ...Markup.inlineKeyboard(rows) },
+    );
+  });
+  bot.action(/^price:manual:(.+)$/, async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const u = await userFor(ctx);
+    const ins: any = await prisma.investmentInstrument.findFirst({
+      where: { id: ctx.match[1], userId: u.id },
+    });
+    if (!ins) return ctx.reply("Instrumen tidak ditemukan.");
+    wizard.set(ctx.chat!.id, {
+      kind: "MANUAL_PRICE",
+      instrumentId: ins.id,
+      symbol: ins.symbol,
+    });
+    await ctx.reply(
+      `✍️ <b>UPDATE ${html(ins.symbol)}</b>\n\nMasukkan harga terbaru per ${html(ins.unitName)}.\nContoh: <code>9750</code>`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.action("platform:list", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const u = await userFor(ctx);
+    const rows: any[] = await investmentService.listPlatforms(u.id);
+    await ctx.reply(
+      rows.length
+        ? `🏦 <b>PLATFORM INVESTASI</b>\n\n${rows.map((x: any, i: number) => `${i + 1}. <b>${html(x.name)}</b>\n${html(x.type)}${x.accountReference ? ` • ${html(x.accountReference)}` : ""}`).join("\n\n")}`
+        : "Belum ada platform.",
+      { parse_mode: "HTML", ...backHome() },
+    );
+  });
+  bot.action("invest:add-help", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      "Tambahkan instrumen melalui command:\n/tambahinvestasi BBCA | Bank Central Asia | STOCK | IDX\n\nTambahkan platform:\n/tambahplatform Stockbit | BROKER | RDN BCA | Akun utama",
+      { ...backHome() },
+    );
+  });
+
+  bot.action("settings:country", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await ctx.reply("🌍 Pilih negara atau wilayah utama:", {
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("🇮🇩 Indonesia", "set:country:ID"),
+          Markup.button.callback("🇺🇸 United States", "set:country:US"),
+        ],
+        [
+          Markup.button.callback("🇸🇬 Singapore", "set:country:SG"),
+          Markup.button.callback("🇬🇧 United Kingdom", "set:country:GB"),
+        ],
+        [
+          Markup.button.callback("🇯🇵 Japan", "set:country:JP"),
+          Markup.button.callback("🇪🇺 Europe", "set:country:DE"),
+        ],
+        [Markup.button.callback("⚙️ Kembali", "menu:settings")],
+      ]),
+    });
+  });
+
+  bot.action(/^set:country:(ID|US|SG|GB|JP|DE)$/, async (ctx: any) => {
+    const country = ctx.match[1] as TelegramCountry;
+    await saveTelegramProfile(ctx.chat!.id, { country });
+    await ctx.answerCbQuery(`Negara: ${countryName[country]}`);
+    await ctx.reply(
+      `✅ Negara diubah menjadi ${html(countryName[country])}.
+
+Mata uang yang umum digunakan adalah ${countryCurrency[country]}. Kamu dapat mengubah mata uang utama secara terpisah.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback(
+              `💱 Gunakan ${countryCurrency[country]}`,
+              `set:currency:${countryCurrency[country]}`,
+            ),
+          ],
+          [Markup.button.callback("⚙️ Kembali", "menu:settings")],
+        ]),
+      },
+    );
+  });
+
+  bot.action("settings:language", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await ctx.reply("🗣 Pilih bahasa bot:", {
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("🇮🇩 Bahasa Indonesia", "set:language:id"),
+          Markup.button.callback("🇬🇧 English", "set:language:en"),
+        ],
+        [Markup.button.callback("⚙️ Kembali", "menu:settings")],
+      ]),
+    });
+  });
+
+  bot.action(/^set:language:(id|en)$/, async (ctx: any) => {
+    const language = ctx.match[1] as TelegramLanguage;
+    await saveTelegramProfile(ctx.chat!.id, { language });
+    await ctx.answerCbQuery(languageName[language]);
+    await ctx.reply(
+      language === "en"
+        ? "✅ Language preference saved. Some financial labels still follow the selected theme."
+        : "✅ Preferensi bahasa disimpan.",
+      {
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("⚙️ Kembali", "menu:settings")],
+        ]),
+      },
+    );
+  });
+
+  bot.action("settings:currency", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      "Pilih mata uang tampilan utama. Data asli tidak akan diubah:",
+      {
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback("🇮🇩 IDR", "set:currency:IDR"),
+            Markup.button.callback("🇺🇸 USD", "set:currency:USD"),
+          ],
+          [
+            Markup.button.callback("🇸🇬 SGD", "set:currency:SGD"),
+            Markup.button.callback("🇪🇺 EUR", "set:currency:EUR"),
+          ],
+          [
+            Markup.button.callback("🇯🇵 JPY", "set:currency:JPY"),
+            Markup.button.callback("🇬🇧 GBP", "set:currency:GBP"),
+          ],
+        ]),
+      },
+    );
+  });
+  bot.action(/^set:currency:(IDR|USD|SGD|EUR|JPY|GBP)$/, async (ctx: any) => {
+    const u = await userFor(ctx);
+    const selectedCurrency = ctx.match[1];
+    await settingsService.update(u.id, {
+      baseCurrency: selectedCurrency,
+    } as any);
+    await saveTelegramProfile(ctx.chat!.id, { currency: selectedCurrency });
+    await ctx.answerCbQuery(`Tampilan diubah ke ${selectedCurrency}`);
+    await ctx.reply(
+      `✅ Mata uang utama menjadi ${selectedCurrency}. Data asli tidak diubah. Tekan tombol di bawah untuk menyinkronkan kurs yang dibutuhkan.`,
+      {
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback(
+              "🌐 Update Kurs Sekarang",
+              "fx:auto:preview",
+            ),
+          ],
+          [Markup.button.callback("⚙️ Kembali ke Pengaturan", "menu:settings")],
+        ]),
+      },
+    );
+  });
+
+  bot.action("fx:auto:preview", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const ready = await requireOnboarding(ctx);
+    if (!ready) return;
+    const { user, pref } = ready;
+    const pairs = await fxProviderService.preview(user.id, pref.baseCurrency);
+    if (!pairs.length) {
+      await ctx.reply(
+        `✅ Semua data yang tercatat sudah menggunakan ${pref.baseCurrency}. Tidak ada kurs yang perlu diperbarui.`,
+        { ...backHome() },
+      );
+      return;
+    }
+    const lines = pairs
+      .map(
+        (p: any) =>
+          `${p.supported ? "💱" : "⚠️"} ${p.currency} → ${p.targetCurrency}${p.supported ? "" : " • perlu manual/provider khusus"}`,
+      )
+      .join("\n");
+    await ctx.reply(
+      `🌐 <b>UPDATE KURS TERPAKAI</b>\n\nMata uang utama: <b>${html(pref.baseCurrency)}</b>\n\nPasangan yang ditemukan:\n${html(lines)}\n\nBot hanya mengambil kurs untuk mata uang yang benar-benar digunakan. Kurs aset dan histori transaksi asli tidak akan ditulis ulang.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("✅ Ambil Kurs Terbaru", "fx:auto:confirm")],
+          [Markup.button.callback("❌ Batal", "menu:settings")],
+        ]),
+      },
+    );
+  });
+
+  bot.action("fx:auto:confirm", async (ctx: any) => {
+    await ctx.answerCbQuery("Mengambil kurs terbaru...");
+    const ready = await requireOnboarding(ctx);
+    if (!ready) return;
+    const { user, pref } = ready;
+    const results = await fxProviderService.refreshUsedCurrencies(
+      user.id,
+      pref.baseCurrency,
+    );
+    const updated = results.filter((x: any) => x.status === "UPDATED");
+    const skipped = results.filter((x: any) => x.status === "SKIPPED");
+    const failed = results.filter((x: any) => x.status === "FAILED");
+    const rows = results
+      .map((x: any) => {
+        if (x.status === "UPDATED") {
+          const movement =
+            x.changePercent == null
+              ? "baru"
+              : `${x.changePercent >= 0 ? "+" : ""}${x.changePercent.toFixed(3)}%`;
+          return `✅ 1 ${x.fromCurrency} = ${x.rate} ${x.toCurrency} • ${movement}`;
+        }
+        return `${x.status === "SKIPPED" ? "⚠️" : "❌"} ${x.fromCurrency} → ${x.toCurrency} • ${x.reason}`;
+      })
+      .join("\n");
+    await ctx.reply(
+      `💱 <b>KURS SELESAI DIPERBARUI</b>\n\n${html(rows || "Tidak ada pasangan kurs.")}\n\n✅ Berhasil: ${updated.length}\n⚠️ Perlu manual: ${skipped.length}\n❌ Gagal: ${failed.length}\n\nSumber: kurs referensi harian. Ini bukan harga beli atau jual bank.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback("📊 Lihat Dashboard", "menu:dashboard"),
+            Markup.button.callback("📋 Lihat Kurs", "fx:list"),
+          ],
+          [Markup.button.callback("🏠 Beranda", "menu:home")],
+        ]),
+      },
+    );
+  });
+
+  bot.action("fx:list", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const u = await userFor(ctx);
+    const rates = await prisma.exchangeRate.findMany({
+      where: { userId: u.id },
+      orderBy: [{ quoteCurrency: "asc" }, { baseCurrency: "asc" }],
+    });
+    const lines = rates
+      .map(
+        (r: any) =>
+          `• 1 ${r.baseCurrency} = ${Number(r.rate)} ${r.quoteCurrency}\n  ${r.source} • ${new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeZone: "Asia/Jakarta" }).format(r.capturedAt)}`,
+      )
+      .join("\n\n");
+    await ctx.reply(
+      `📋 <b>KURS TERSIMPAN</b>\n\n${html(lines || "Belum ada kurs tersimpan.")}`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback("🌐 Update Kurs", "fx:auto:preview"),
+            Markup.button.callback("✍️ Manual", "settings:fx"),
+          ],
+          [Markup.button.callback("⚙️ Pengaturan", "menu:settings")],
+        ]),
+      },
+    );
+  });
+
+  bot.action("settings:fx", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      "🔁 <b>ATUR KURS MANUAL</b>\n\nPilih pasangan kurs yang ingin disimpan. Format: 1 mata uang asal = berapa mata uang tujuan.",
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback("USD → IDR", "fx:USD:IDR"),
+            Markup.button.callback("IDR → USD", "fx:IDR:USD"),
+          ],
+          [
+            Markup.button.callback("USD → SGD", "fx:USD:SGD"),
+            Markup.button.callback("EUR → IDR", "fx:EUR:IDR"),
+          ],
+          [Markup.button.callback("✍️ Pair lain via /kurs", "fx:help")],
+        ]),
+      },
+    );
+  });
+  bot.action(/^fx:([A-Z]{3,5}):([A-Z]{3,5})$/, async (ctx: any) => {
+    await ctx.answerCbQuery();
+    wizard.set(ctx.chat!.id, {
+      kind: "FX_RATE",
+      baseCurrency: ctx.match[1],
+      quoteCurrency: ctx.match[2],
+    });
+    await ctx.reply(
+      `Masukkan kurs:\n\n1 ${ctx.match[1]} = berapa ${ctx.match[2]}?\nContoh: \`16350\``,
+      { parse_mode: "HTML" },
+    );
+  });
+  bot.action("fx:help", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      "Gunakan command:\n/kurs USD IDR 16350\n/kurs USDT IDR 16320\n/kurs EUR USD 1.08",
+      { ...backHome() },
+    );
+  });
+  bot.command("kurs", async (ctx: any) => {
+    const u = await userFor(ctx);
+    const parts = ctx.message.text.trim().split(/\s+/);
+    if (parts.length < 4) return ctx.reply("Format: /kurs USD IDR 16350");
+    const rate = Number(parts[3].replace(",", "."));
+    if (!(rate > 0)) return ctx.reply("Kurs tidak valid.");
+    await upsertExchangeRate(u.id, parts[1], parts[2], rate, "MANUAL");
+    await ctx.reply(
+      `✅ Kurs tersimpan\n1 ${parts[1].toUpperCase()} = ${rate} ${parts[2].toUpperCase()}\n\nSeluruh dashboard akan dikonversi saat dibuka, tanpa mengubah data asli.`,
+      { ...homeKeyboard() },
+    );
+  });
+
+  bot.action("settings:storage", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await ctx.reply("Pilih cara menyimpan harga:", {
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback(
+            "💾 Hanya harga terakhir",
+            "set:storage:LATEST_ONLY",
+          ),
+        ],
+        [Markup.button.callback("📚 Simpan histori", "set:storage:SNAPSHOT")],
+      ]),
+    });
+  });
+  bot.action(/^set:storage:(LATEST_ONLY|SNAPSHOT)$/, async (ctx: any) => {
+    const u = await userFor(ctx);
+    await settingsService.update(u.id, {
+      priceStorageMode: ctx.match[1] as any,
+    });
+    await ctx.answerCbQuery("Pengaturan disimpan");
+    await sendSettings(ctx);
+  });
+  bot.action("settings:confirm", async (ctx: any) => {
+    const u = await userFor(ctx);
+    const p: any = await settingsService.get(u.id);
+    await settingsService.update(u.id, {
+      confirmBeforePriceRefresh: !p.confirmBeforePriceRefresh,
+    });
+    await ctx.answerCbQuery("Pengaturan diubah");
+    await sendSettings(ctx);
+  });
+  bot.action("settings:snapshot", async (ctx: any) => {
+    const u = await userFor(ctx);
+    const p: any = await settingsService.get(u.id);
+    await settingsService.update(u.id, {
+      createSnapshotAfterRefresh: !p.createSnapshotAfterRefresh,
+    });
+    await ctx.answerCbQuery("Pengaturan diubah");
+    await sendSettings(ctx);
+  });
+  bot.action("settings:motivation", async (ctx: any) => {
+    const u = await userFor(ctx);
+    const p: any = await settingsService.get(u.id);
+    await settingsService.update(u.id, { showMotivation: !p.showMotivation });
+    await ctx.answerCbQuery("Pengaturan diubah");
+    await sendSettings(ctx);
+  });
+  bot.action("settings:theme", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await ctx.reply("Pilih gaya Telegram bot. Tema bisa diganti kapan saja:", {
+      ...themeKeyboard("set:theme"),
+    });
+  });
+  bot.action(
+    /^set:theme:(FRIENDLY|MOTIVATIONAL|PROFESSIONAL|MINIMAL|CALM|PLAYFUL|GAMIFIED|FINANCIAL_COACH)$/,
+    async (ctx: any) => {
+      const u = await userFor(ctx);
+      await settingsService.update(u.id, {
+        telegramTheme: ctx.match[1] as any,
+      });
+      await ctx.answerCbQuery("Tema disimpan");
+      await sendSettings(ctx);
+    },
+  );
+  bot.action("settings:stale", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await ctx.reply("Pilih profil batas stale:", {
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("⚡ Ketat", "set:stale:strict"),
+          Markup.button.callback("⚖️ Normal", "set:stale:normal"),
+        ],
+        [Markup.button.callback("🌿 Santai", "set:stale:relaxed")],
+      ]),
+    });
+  });
+  bot.action(/^set:stale:(strict|normal|relaxed)$/, async (ctx: any) => {
+    const u = await userFor(ctx);
+    const mode = ctx.match[1];
+    const data =
+      mode === "strict"
+        ? { stockStaleHours: 12, cryptoStaleHours: 2, goldStaleHours: 12 }
+        : mode === "relaxed"
+          ? { stockStaleHours: 72, cryptoStaleHours: 24, goldStaleHours: 72 }
+          : { stockStaleHours: 24, cryptoStaleHours: 6, goldStaleHours: 24 };
+    await settingsService.update(u.id, data);
+    await ctx.answerCbQuery("Batas stale disimpan");
+    await sendSettings(ctx);
+  });
+  bot.action("settings:price", async (ctx: any) => {
+    await ctx.answerCbQuery();
+    await sendSettings(ctx);
+  });
+
+  bot.action(/^debt:(.+)$/, async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const u = await userFor(ctx);
+    const d: any = await debtService.find(u.id, ctx.match[1]);
+    const paid = Number(d.originalPrincipal) - Number(d.remainingPrincipal);
+    await ctx.reply(
+      `💳 <b>${html(d.name)}</b>\n\n🏢 ${html(d.creditor)}\n📉 Sisa: <b>${html(currency(Number(d.remainingPrincipal), d.currency ?? "IDR"))}</b>\n${html(progress(paid, Number(d.originalPrincipal)))}\n🏷️ ${html(d.status)}`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("💸 Catat Pembayaran", `debt:pay:${d.id}`)],
+          [Markup.button.callback("🏠 Beranda", "menu:home")],
+        ]),
+      },
+    );
+  });
+  bot.action(/^debt:pay:(.+)$/, async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const u = await userFor(ctx);
+    const d: any = await debtService.find(u.id, ctx.match[1]);
+    wizard.set(ctx.chat!.id, {
+      kind: "PAY_DEBT",
+      debtId: d.id,
+      debtName: d.name,
+    });
+    await ctx.reply(
+      `Masukkan nominal pembayaran untuk <b>${html(d.name)}</b>:`,
+      {
+        parse_mode: "HTML",
+      },
+    );
+  });
+
+  bot.command("tambahplatform", async (ctx: any) => {
+    const u = await userFor(ctx);
+    const raw = ctx.message.text
+      .replace(/^\/tambahplatform(?:@\w+)?\s*/, "")
+      .trim();
+    const [name, type, accountReference, notes] = raw
+      .split("|")
+      .map((x: string) => x.trim());
+    if (!name || !type)
+      return ctx.reply(
+        "Format: /tambahplatform Stockbit | BROKER | RDN BCA | Catatan",
+      );
+    const p: any = await investmentService.createPlatform(u.id, {
+      name,
+      type: type as any,
+      ...(accountReference ? { accountReference } : {}),
+      ...(notes ? { notes } : {}),
+    });
+    await ctx.reply(`✅ Platform <b>${html(p.name)}</b> tersimpan.`, {
+      parse_mode: "HTML",
+      ...backHome(),
+    });
+  });
+  bot.command("tambahinvestasi", async (ctx: any) => {
+    const u = await userFor(ctx);
+    const raw = ctx.message.text
+      .replace(/^\/tambahinvestasi(?:@\w+)?\s*/, "")
+      .trim();
+    const [symbol, name, type, exchange] = raw
+      .split("|")
+      .map((x: string) => x.trim());
+    if (!symbol || !name || !type)
+      return ctx.reply(
+        "Format: /tambahinvestasi BBCA | Bank Central Asia | STOCK | IDX",
+      );
+    const liquidityLevel =
+      type === "STOCK" || type === "CRYPTO"
+        ? "HIGH"
+        : type === "GOLD"
+          ? "MEDIUM"
+          : "LOW";
+    const staleAfterHours = type === "CRYPTO" ? 6 : 24;
+    const x: any = await investmentService.createInstrument(u.id, {
+      symbol: symbol.toUpperCase(),
+      name,
+      type: type as any,
+      ...(exchange ? { exchange } : {}),
+      currency: "IDR",
+      unitName: type === "STOCK" ? "share" : type === "GOLD" ? "gram" : "unit",
+      unitsPerLot: type === "STOCK" ? 100 : 1,
+      liquidityLevel: liquidityLevel as any,
+      staleAfterHours,
+    });
+    await ctx.reply(
+      `✅ <b>${html(x.symbol)}</b> berhasil ditambahkan.\n\nHarga pasar belum tersedia. Nilai beli hanya akan dianggap sebagai modal tercatat.`,
+      { parse_mode: "HTML", ...backHome() },
+    );
+  });
+
+  bot.on("text", async (ctx: any) => {
+    if (ctx.message.text.startsWith("/")) return;
+    const state = wizard.get(ctx.chat.id);
+    if (!state) return;
+    const u = await userFor(ctx);
+    try {
+      if (state.kind === "INCOME_AMOUNT" || state.kind === "EXPENSE_AMOUNT") {
+        const amount = num(ctx.message.text);
+        if (!(amount > 0))
+          return ctx.reply("Masukkan nominal angka yang valid.");
+        await sendAccounts(
+          ctx,
+          state.kind === "INCOME_AMOUNT" ? "income" : "expense",
+          amount,
+        );
+        wizard.delete(ctx.chat.id);
+        return;
+      }
+      if (state.kind === "INCOME_NOTE" || state.kind === "EXPENSE_NOTE") {
+        const income = state.kind === "INCOME_NOTE";
+        const selectedAccount = await prisma.financialAccount.findUnique({
+          where: { id: state.accountId },
+        });
+        await financeService.record(u.id, {
+          type: income ? "INCOME" : "EXPENSE",
+          amount: state.amount,
+          ...(income
+            ? { destinationAccountId: state.accountId }
+            : { sourceAccountId: state.accountId }),
+          currency: selectedAccount?.currency ?? "IDR",
+          description: ctx.message.text,
+          idempotencyKey: `tg-${ctx.chat.id}-${ctx.message.message_id}`,
+        });
+        wizard.delete(ctx.chat.id);
+        await ctx.reply(
+          `${income ? "✅ Pendapatan" : "✅ Pengeluaran"} <b>${html(currency(state.amount))}</b> berhasil dicatat melalui <b>${html(state.accountName)}</b>.`,
+          { parse_mode: "HTML", ...homeKeyboard() },
+        );
+        return;
+      }
+      if (state.kind === "MANUAL_PRICE") {
+        const price = num(ctx.message.text);
+        if (!(price > 0)) return ctx.reply("Harga tidak valid.");
+        const instrument: any = await prisma.investmentInstrument.findUnique({
+          where: { id: state.instrumentId },
+        });
+        await investmentService.addPrice(u.id, {
+          instrumentId: state.instrumentId,
+          price,
+          currency: instrument?.currency ?? "IDR",
+          source: "MANUAL",
+          capturedAt: new Date(),
+        });
+        wizard.delete(ctx.chat.id);
+        const p: any = await investmentService.portfolio(u.id);
+        const item = p.items.find(
+          (x: any) => x.instrumentId === state.instrumentId,
+        );
+        await ctx.reply(
+          `✅ <b>HARGA ${html(state.symbol)} DIPERBARUI</b>\n\n💵 Harga terbaru: <b>${html(currency(price, instrument?.currency ?? "IDR"))}</b>\n📊 Nilai pasar: <b>${html(currency(item?.marketValue ?? 0, p.displayCurrency ?? "IDR"))}</b>\n${item?.unrealizedProfit >= 0 ? "📈" : "📉"} Untung/rugi: <b>${html(currency(item?.unrealizedProfit ?? 0, p.displayCurrency ?? "IDR"))}</b>\n🕒 ${html(nowLabel())}\n\nHarga ini disimpan manual dan hanya diperbarui saat kamu menekan tombol update.`,
+          { parse_mode: "HTML", ...homeKeyboard() },
+        );
+        return;
+      }
+      if (state.kind === "FX_RATE") {
+        const rate = Number(ctx.message.text.replace(",", "."));
+        if (!(rate > 0)) return ctx.reply("Kurs tidak valid.");
+        await upsertExchangeRate(
+          u.id,
+          state.baseCurrency,
+          state.quoteCurrency,
+          rate,
+          "MANUAL",
+        );
+        wizard.delete(ctx.chat.id);
+        await ctx.reply(
+          `✅ Kurs tersimpan\n\n1 ${state.baseCurrency} = ${rate} ${state.quoteCurrency}\n\nData asli tetap menggunakan mata uang masing-masing. Dashboard akan menghitung ulang ke mata uang utama.`,
+          { ...homeKeyboard() },
+        );
+        return;
+      }
+      if (state.kind === "PAY_DEBT") {
+        const amount = num(ctx.message.text);
+        if (!(amount > 0)) return ctx.reply("Nominal tidak valid.");
+        const r: any = await debtService.pay(u.id, state.debtId, {
+          amount,
+          paidAt: new Date(),
+          source: "TELEGRAM",
+          note: "Pembayaran via Telegram",
+          idempotencyKey: `tg-${ctx.chat.id}-${ctx.message.message_id}`,
+        });
+        wizard.delete(ctx.chat.id);
+        await ctx.reply(
+          `✅ Pembayaran <b>${html(currency(amount))}</b> untuk <b>${html(state.debtName)}</b> tercatat.\n📉 Sisa utang: <b>${html(currency(Number(r.debt.remainingPrincipal)))}</b>`,
+          { parse_mode: "HTML", ...homeKeyboard() },
+        );
+      }
+    } catch (e: any) {
+      await ctx.reply(`❌ ${e.message}`);
+    }
+  });
+
+  bot.catch((err: unknown) => console.error("Telegram bot error", err));
+  await bot.launch();
+  console.log("Telegram bot started (interactive polling)");
+}
+
+export async function stopTelegramBot() {
+  if (bot) bot.stop();
+}

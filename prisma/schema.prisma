@@ -1,0 +1,596 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum DebtStatus {
+  ACTIVE
+  OVERDUE
+  PRINCIPAL_PAID
+  SETTLEMENT_PENDING
+  PAID
+  PAUSED
+  CANCELLED
+}
+
+enum DebtPriority {
+  CRITICAL
+  URGENT
+  NORMAL
+  SLOW
+}
+
+enum PaymentPolicy {
+  FIXED
+  FLEXIBLE
+  NEGOTIABLE
+}
+
+enum PaymentSource {
+  MANUAL
+  TELEGRAM
+  SYSTEM
+}
+
+enum InstallmentStatus {
+  UPCOMING
+  DUE
+  PARTIAL
+  PAID
+  PAID_LATE
+  OVERDUE
+  RESCHEDULED
+  SKIPPED
+}
+
+enum ChargeType {
+  LATE_FEE
+  INTEREST
+  ADMIN_FEE
+  OTHER
+}
+
+enum ChargeBillingStatus {
+  PENDING
+  BILLED
+  PARTIAL
+  PAID
+  WAIVED
+}
+
+enum LateFeeCalculationType {
+  NONE
+  FIXED
+  DAILY
+  PERCENTAGE_DAILY
+  PERCENTAGE_FIXED
+  MANUAL
+}
+
+enum LateFeeSettlementPolicy {
+  IMMEDIATE
+  NEXT_INSTALLMENT
+  END_OF_TERM
+  MANUAL
+}
+
+enum PercentageBase {
+  INSTALLMENT_AMOUNT
+  UNPAID_INSTALLMENT
+  REMAINING_PRINCIPAL
+}
+
+enum PaymentAllocationPolicy {
+  OLDEST_CHARGE_FIRST
+  CURRENT_INSTALLMENT_FIRST
+  PRINCIPAL_FIRST
+  MANUAL
+}
+
+enum NegotiationStatus {
+  AVAILABLE
+  IN_PROGRESS
+  AGREED
+  REJECTED
+  EXPIRED
+}
+
+enum AdjustmentType {
+  DUE_DATE_EXTENSION
+  PAYMENT_REDUCTION
+  PAYMENT_HOLIDAY
+  LATE_FEE_WAIVER
+  OTHER
+}
+
+enum InvestmentPlatformType {
+  BROKER
+  EXCHANGE
+  GOLD_PROVIDER
+  BANK
+  WALLET
+  MARKETPLACE
+  OTHER
+}
+
+model User {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  name                String
+  telegramChatId      BigInt?                @unique @map("telegram_chat_id")
+  telegramUsername    String?                @map("telegram_username")
+  createdAt           DateTime               @default(now()) @map("created_at")
+  updatedAt           DateTime               @updatedAt @map("updated_at")
+  debts               Debt[]
+  accounts            FinancialAccount[]
+  categories          TransactionCategory[]
+  transactions        FinancialTransaction[]
+  instruments         InvestmentInstrument[]
+  trades              InvestmentTrade[]
+  dividends           DividendIncome[]
+  marketPrices        MarketPrice[]
+  investmentPlatforms InvestmentPlatform[]
+  financePreference   UserFinancePreference?
+  exchangeRates       ExchangeRate[]
+
+  @@map("users")
+}
+
+model UserFinancePreference {
+  id                         String           @id @default(uuid()) @db.Uuid
+  userId                     String           @unique @map("user_id") @db.Uuid
+  baseCurrency               String           @default("IDR") @map("base_currency")
+  priceStorageMode           PriceStorageMode @default(LATEST_ONLY) @map("price_storage_mode")
+  confirmBeforePriceRefresh  Boolean          @default(true) @map("confirm_before_price_refresh")
+  createSnapshotAfterRefresh Boolean          @default(false) @map("create_snapshot_after_refresh")
+  stockStaleHours            Int              @default(24) @map("stock_stale_hours")
+  cryptoStaleHours           Int              @default(6) @map("crypto_stale_hours")
+  goldStaleHours             Int              @default(24) @map("gold_stale_hours")
+  telegramTheme              TelegramTheme    @default(FRIENDLY) @map("telegram_theme")
+  showMotivation             Boolean          @default(true) @map("show_motivation")
+  compactNumbers             Boolean          @default(false) @map("compact_numbers")
+  fxStaleHours               Int              @default(24) @map("fx_stale_hours")
+  onboardingCompleted        Boolean          @default(false) @map("onboarding_completed")
+  createdAt                  DateTime         @default(now()) @map("created_at")
+  updatedAt                  DateTime         @updatedAt @map("updated_at")
+  user                       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_finance_preferences")
+}
+
+model Debt {
+  id                   String                  @id @default(uuid()) @db.Uuid
+  userId               String                  @map("user_id") @db.Uuid
+  name                 String
+  creditor             String
+  description          String?
+  originalPrincipal    Decimal                 @map("original_principal") @db.Decimal(19, 2)
+  currency             String                  @default("IDR")
+  remainingPrincipal   Decimal                 @map("remaining_principal") @db.Decimal(19, 2)
+  paymentPolicy        PaymentPolicy           @map("payment_policy")
+  fixedMonthlyAmount   Decimal                 @default(0) @map("fixed_monthly_amount") @db.Decimal(19, 2)
+  minimumMonthlyAmount Decimal                 @default(0) @map("minimum_monthly_amount") @db.Decimal(19, 2)
+  targetMonthlyAmount  Decimal                 @default(0) @map("target_monthly_amount") @db.Decimal(19, 2)
+  interestRateAnnual   Decimal                 @default(0) @map("interest_rate_annual") @db.Decimal(7, 4)
+  startDate            DateTime?               @map("start_date") @db.Date
+  maturityDate         DateTime?               @map("maturity_date") @db.Date
+  dueDay               Int?                    @map("due_day")
+  tenorMonths          Int?                    @map("tenor_months")
+  priority             DebtPriority            @default(NORMAL)
+  canBeNegotiated      Boolean                 @default(false) @map("can_be_negotiated")
+  allocationPolicy     PaymentAllocationPolicy @default(CURRENT_INSTALLMENT_FIRST) @map("allocation_policy")
+  status               DebtStatus              @default(ACTIVE)
+  notes                String?
+  createdAt            DateTime                @default(now()) @map("created_at")
+  updatedAt            DateTime                @updatedAt @map("updated_at")
+  user                 User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lateFeeRule          DebtLateFeeRule?
+  installments         DebtInstallment[]
+  charges              DebtCharge[]
+  payments             DebtPayment[]
+  negotiations         DebtNegotiation[]
+
+  @@index([userId, status])
+  @@index([userId, priority])
+  @@map("debts")
+}
+
+model DebtLateFeeRule {
+  id               String                  @id @default(uuid()) @db.Uuid
+  debtId           String                  @unique @map("debt_id") @db.Uuid
+  calculationType  LateFeeCalculationType  @default(NONE) @map("calculation_type")
+  fixedAmount      Decimal                 @default(0) @map("fixed_amount") @db.Decimal(19, 2)
+  dailyAmount      Decimal                 @default(0) @map("daily_amount") @db.Decimal(19, 2)
+  percentage       Decimal                 @default(0) @db.Decimal(9, 6)
+  percentageBase   PercentageBase          @default(UNPAID_INSTALLMENT) @map("percentage_base")
+  graceDays        Int                     @default(0) @map("grace_days")
+  maxDays          Int?                    @map("max_days")
+  maxAmount        Decimal?                @map("max_amount") @db.Decimal(19, 2)
+  settlementPolicy LateFeeSettlementPolicy @default(MANUAL) @map("settlement_policy")
+  createdAt        DateTime                @default(now()) @map("created_at")
+  updatedAt        DateTime                @updatedAt @map("updated_at")
+  debt             Debt                    @relation(fields: [debtId], references: [id], onDelete: Cascade)
+
+  @@map("debt_late_fee_rules")
+}
+
+model DebtInstallment {
+  id                  String                  @id @default(uuid()) @db.Uuid
+  debtId              String                  @map("debt_id") @db.Uuid
+  period              String
+  scheduledPrincipal  Decimal                 @map("scheduled_principal") @db.Decimal(19, 2)
+  paidPrincipal       Decimal                 @default(0) @map("paid_principal") @db.Decimal(19, 2)
+  dueDate             DateTime                @map("due_date") @db.Date
+  expectedPaymentDate DateTime?               @map("expected_payment_date") @db.Date
+  status              InstallmentStatus       @default(UPCOMING)
+  createdAt           DateTime                @default(now()) @map("created_at")
+  updatedAt           DateTime                @updatedAt @map("updated_at")
+  debt                Debt                    @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  charges             DebtCharge[]            @relation("SourceInstallment")
+  billedCharges       DebtCharge[]            @relation("BilledInstallment")
+  allocations         DebtPaymentAllocation[]
+  adjustments         DebtAdjustment[]
+
+  @@unique([debtId, period])
+  @@index([debtId, dueDate, status])
+  @@map("debt_installments")
+}
+
+model DebtCharge {
+  id                  String                  @id @default(uuid()) @db.Uuid
+  debtId              String                  @map("debt_id") @db.Uuid
+  sourceInstallmentId String?                 @map("source_installment_id") @db.Uuid
+  billedInstallmentId String?                 @map("billed_installment_id") @db.Uuid
+  type                ChargeType
+  amount              Decimal                 @db.Decimal(19, 2)
+  paidAmount          Decimal                 @default(0) @map("paid_amount") @db.Decimal(19, 2)
+  billingStatus       ChargeBillingStatus     @default(PENDING) @map("billing_status")
+  settlementPolicy    LateFeeSettlementPolicy @map("settlement_policy")
+  sourcePeriod        String?                 @map("source_period")
+  targetPeriod        String?                 @map("target_period")
+  lateDays            Int?                    @map("late_days")
+  estimated           Boolean                 @default(false)
+  description         String?
+  createdAt           DateTime                @default(now()) @map("created_at")
+  updatedAt           DateTime                @updatedAt @map("updated_at")
+  debt                Debt                    @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  sourceInstallment   DebtInstallment?        @relation("SourceInstallment", fields: [sourceInstallmentId], references: [id], onDelete: SetNull)
+  billedInstallment   DebtInstallment?        @relation("BilledInstallment", fields: [billedInstallmentId], references: [id], onDelete: SetNull)
+  allocations         DebtPaymentAllocation[]
+
+  @@index([debtId, billingStatus])
+  @@map("debt_charges")
+}
+
+model DebtPayment {
+  id             String                  @id @default(uuid()) @db.Uuid
+  debtId         String                  @map("debt_id") @db.Uuid
+  amount         Decimal                 @db.Decimal(19, 2)
+  paidAt         DateTime                @default(now()) @map("paid_at")
+  source         PaymentSource           @default(MANUAL)
+  note           String?
+  idempotencyKey String?                 @unique @map("idempotency_key")
+  createdAt      DateTime                @default(now()) @map("created_at")
+  debt           Debt                    @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  allocations    DebtPaymentAllocation[]
+
+  @@index([debtId, paidAt])
+  @@map("debt_payments")
+}
+
+model DebtPaymentAllocation {
+  id              String           @id @default(uuid()) @db.Uuid
+  paymentId       String           @map("payment_id") @db.Uuid
+  installmentId   String?          @map("installment_id") @db.Uuid
+  chargeId        String?          @map("charge_id") @db.Uuid
+  principalAmount Decimal          @default(0) @map("principal_amount") @db.Decimal(19, 2)
+  chargeAmount    Decimal          @default(0) @map("charge_amount") @db.Decimal(19, 2)
+  payment         DebtPayment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  installment     DebtInstallment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
+  charge          DebtCharge?      @relation(fields: [chargeId], references: [id], onDelete: SetNull)
+
+  @@map("debt_payment_allocations")
+}
+
+model DebtNegotiation {
+  id                    String            @id @default(uuid()) @db.Uuid
+  debtId                String            @map("debt_id") @db.Uuid
+  status                NegotiationStatus
+  previousMonthlyAmount Decimal?          @map("previous_monthly_amount") @db.Decimal(19, 2)
+  agreedMonthlyAmount   Decimal?          @map("agreed_monthly_amount") @db.Decimal(19, 2)
+  effectiveFrom         DateTime?         @map("effective_from") @db.Date
+  effectiveUntil        DateTime?         @map("effective_until") @db.Date
+  reason                String?
+  notes                 String?
+  createdAt             DateTime          @default(now()) @map("created_at")
+  debt                  Debt              @relation(fields: [debtId], references: [id], onDelete: Cascade)
+
+  @@index([debtId, status])
+  @@map("debt_negotiations")
+}
+
+model DebtAdjustment {
+  id              String          @id @default(uuid()) @db.Uuid
+  installmentId   String          @map("installment_id") @db.Uuid
+  type            AdjustmentType
+  previousDueDate DateTime?       @map("previous_due_date") @db.Date
+  newDueDate      DateTime?       @map("new_due_date") @db.Date
+  previousAmount  Decimal?        @map("previous_amount") @db.Decimal(19, 2)
+  newAmount       Decimal?        @map("new_amount") @db.Decimal(19, 2)
+  lateFeeWaived   Boolean         @default(false) @map("late_fee_waived")
+  reason          String?
+  createdAt       DateTime        @default(now()) @map("created_at")
+  installment     DebtInstallment @relation(fields: [installmentId], references: [id], onDelete: Cascade)
+
+  @@map("debt_adjustments")
+}
+
+enum AccountType {
+  CASH
+  BANK
+  E_WALLET
+  CREDIT_CARD
+  PAYLATER
+  CRYPTO_WALLET
+  INVESTMENT
+  OTHER
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+  INVESTMENT_BUY
+  INVESTMENT_SELL
+  DIVIDEND
+  DEBT_PAYMENT
+  ADJUSTMENT
+}
+
+enum AssetType {
+  STOCK
+  CRYPTO
+  GOLD
+  MUTUAL_FUND
+  DEPOSIT
+  PROPERTY
+  OTHER
+}
+
+enum TradeType {
+  BUY
+  SELL
+}
+
+enum PriceSource {
+  MANUAL
+  API
+  IMPORT
+}
+
+enum ExchangeRateSource {
+  MANUAL
+  API
+  IMPORT
+}
+
+enum PriceStorageMode {
+  LATEST_ONLY
+  SNAPSHOT
+}
+
+enum TelegramTheme {
+  FRIENDLY
+  MOTIVATIONAL
+  PROFESSIONAL
+  MINIMAL
+  CALM
+  PLAYFUL
+  GAMIFIED
+  FINANCIAL_COACH
+}
+
+enum ValuationStatus {
+  UNPRICED
+  PURCHASE_PRICE_ONLY
+  MANUAL_PRICE
+  MARKET_PRICE
+  STALE_PRICE
+}
+
+enum LiquidityLevel {
+  INSTANT
+  HIGH
+  MEDIUM
+  LOW
+  LOCKED
+}
+
+model ExchangeRate {
+  id            String             @id @default(uuid()) @db.Uuid
+  userId        String             @map("user_id") @db.Uuid
+  baseCurrency  String             @map("base_currency")
+  quoteCurrency String             @map("quote_currency")
+  rate          Decimal            @db.Decimal(28, 12)
+  source        ExchangeRateSource @default(MANUAL)
+  capturedAt    DateTime           @default(now()) @map("captured_at")
+  updatedAt     DateTime           @updatedAt @map("updated_at")
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, baseCurrency, quoteCurrency])
+  @@index([userId, capturedAt])
+  @@map("exchange_rates")
+}
+
+model FinancialAccount {
+  id                   String                 @id @default(uuid()) @db.Uuid
+  userId               String                 @map("user_id") @db.Uuid
+  name                 String
+  type                 AccountType
+  currency             String                 @default("IDR")
+  openingBalance       Decimal                @default(0) @map("opening_balance") @db.Decimal(24, 8)
+  currentBalance       Decimal                @default(0) @map("current_balance") @db.Decimal(24, 8)
+  isActive             Boolean                @default(true) @map("is_active")
+  createdAt            DateTime               @default(now()) @map("created_at")
+  updatedAt            DateTime               @updatedAt @map("updated_at")
+  user                 User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  outgoingTransactions FinancialTransaction[] @relation("TransactionSourceAccount")
+  incomingTransactions FinancialTransaction[] @relation("TransactionDestinationAccount")
+  trades               InvestmentTrade[]
+  dividends            DividendIncome[]
+
+  @@unique([userId, name])
+  @@index([userId, type])
+  @@map("financial_accounts")
+}
+
+model TransactionCategory {
+  id              String                 @id @default(uuid()) @db.Uuid
+  userId          String                 @map("user_id") @db.Uuid
+  name            String
+  transactionType TransactionType        @map("transaction_type")
+  createdAt       DateTime               @default(now()) @map("created_at")
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions    FinancialTransaction[]
+
+  @@unique([userId, name, transactionType])
+  @@map("transaction_categories")
+}
+
+model FinancialTransaction {
+  id                   String               @id @default(uuid()) @db.Uuid
+  userId               String               @map("user_id") @db.Uuid
+  type                 TransactionType
+  categoryId           String?              @map("category_id") @db.Uuid
+  sourceAccountId      String?              @map("source_account_id") @db.Uuid
+  destinationAccountId String?              @map("destination_account_id") @db.Uuid
+  debtId               String?              @map("debt_id") @db.Uuid
+  amount               Decimal              @db.Decimal(24, 8)
+  currency             String               @default("IDR")
+  occurredAt           DateTime             @default(now()) @map("occurred_at")
+  description          String?
+  referenceType        String?              @map("reference_type")
+  referenceId          String?              @map("reference_id")
+  idempotencyKey       String?              @unique @map("idempotency_key")
+  createdAt            DateTime             @default(now()) @map("created_at")
+  user                 User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category             TransactionCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  sourceAccount        FinancialAccount?    @relation("TransactionSourceAccount", fields: [sourceAccountId], references: [id], onDelete: SetNull)
+  destinationAccount   FinancialAccount?    @relation("TransactionDestinationAccount", fields: [destinationAccountId], references: [id], onDelete: SetNull)
+
+  @@index([userId, type, occurredAt])
+  @@map("financial_transactions")
+}
+
+model InvestmentPlatform {
+  id               String                 @id @default(uuid()) @db.Uuid
+  userId           String                 @map("user_id") @db.Uuid
+  name             String
+  type             InvestmentPlatformType
+  accountReference String?                @map("account_reference")
+  website          String?
+  notes            String?
+  isActive         Boolean                @default(true) @map("is_active")
+  createdAt        DateTime               @default(now()) @map("created_at")
+  updatedAt        DateTime               @updatedAt @map("updated_at")
+  user             User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trades           InvestmentTrade[]
+  dividends        DividendIncome[]
+
+  @@unique([userId, name])
+  @@index([userId, type])
+  @@map("investment_platforms")
+}
+
+model InvestmentInstrument {
+  id              String            @id @default(uuid()) @db.Uuid
+  userId          String            @map("user_id") @db.Uuid
+  type            AssetType
+  symbol          String
+  name            String
+  exchange        String?
+  currency        String            @default("IDR")
+  unitName        String            @default("unit") @map("unit_name")
+  unitsPerLot     Decimal           @default(1) @map("units_per_lot") @db.Decimal(18, 8)
+  liquidityLevel  LiquidityLevel    @default(MEDIUM) @map("liquidity_level")
+  staleAfterHours Int               @default(24) @map("stale_after_hours")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trades          InvestmentTrade[]
+  dividends       DividendIncome[]
+  marketPrices    MarketPrice[]
+
+  @@unique([userId, type, symbol, exchange])
+  @@index([userId, type])
+  @@map("investment_instruments")
+}
+
+model InvestmentTrade {
+  id                 String               @id @default(uuid()) @db.Uuid
+  userId             String               @map("user_id") @db.Uuid
+  instrumentId       String               @map("instrument_id") @db.Uuid
+  accountId          String               @map("account_id") @db.Uuid
+  platformId         String?              @map("platform_id") @db.Uuid
+  type               TradeType
+  quantity           Decimal              @db.Decimal(24, 8)
+  pricePerUnit       Decimal              @map("price_per_unit") @db.Decimal(24, 8)
+  fee                Decimal              @default(0) @db.Decimal(19, 2)
+  priceCurrency      String               @default("IDR") @map("price_currency")
+  settlementCurrency String               @default("IDR") @map("settlement_currency")
+  fxRateToSettlement Decimal              @default(1) @map("fx_rate_to_settlement") @db.Decimal(28, 12)
+  settlementAmount   Decimal              @default(0) @map("settlement_amount") @db.Decimal(24, 8)
+  tradedAt           DateTime             @default(now()) @map("traded_at")
+  notes              String?
+  createdAt          DateTime             @default(now()) @map("created_at")
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument         InvestmentInstrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  account            FinancialAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  platform           InvestmentPlatform?  @relation(fields: [platformId], references: [id], onDelete: SetNull)
+
+  @@index([userId, instrumentId, tradedAt])
+  @@index([userId, platformId, tradedAt])
+  @@map("investment_trades")
+}
+
+model DividendIncome {
+  id               String               @id @default(uuid()) @db.Uuid
+  userId           String               @map("user_id") @db.Uuid
+  instrumentId     String               @map("instrument_id") @db.Uuid
+  accountId        String               @map("account_id") @db.Uuid
+  platformId       String?              @map("platform_id") @db.Uuid
+  amount           Decimal              @db.Decimal(19, 2)
+  currency         String               @default("IDR")
+  quantitySnapshot Decimal?             @map("quantity_snapshot") @db.Decimal(24, 8)
+  amountPerUnit    Decimal?             @map("amount_per_unit") @db.Decimal(24, 8)
+  receivedAt       DateTime             @default(now()) @map("received_at")
+  notes            String?
+  createdAt        DateTime             @default(now()) @map("created_at")
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument       InvestmentInstrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  account          FinancialAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  platform         InvestmentPlatform?  @relation(fields: [platformId], references: [id], onDelete: SetNull)
+
+  @@index([userId, receivedAt])
+  @@index([userId, platformId, receivedAt])
+  @@map("dividend_incomes")
+}
+
+model MarketPrice {
+  id           String               @id @default(uuid()) @db.Uuid
+  userId       String               @map("user_id") @db.Uuid
+  instrumentId String               @map("instrument_id") @db.Uuid
+  price        Decimal              @db.Decimal(24, 8)
+  currency     String               @default("IDR")
+  source       PriceSource          @default(MANUAL)
+  capturedAt   DateTime             @default(now()) @map("captured_at")
+  createdAt    DateTime             @default(now()) @map("created_at")
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument   InvestmentInstrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@index([instrumentId, capturedAt])
+  @@map("market_prices")
+}
