@@ -22,6 +22,19 @@ const investmentCallbacks = [
 const investmentCommand =
   /^\/(portfolio|tambahplatform|tambahinvestasi)(?:@\w+)?(?:\s|$)/i;
 
+const telegramUuid =
+  "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+
+export const telegramDebtPaymentAction = new RegExp(
+  `^debt:pay:(${telegramUuid})$`,
+  "i",
+);
+
+export const telegramDebtDetailAction = new RegExp(
+  `^debt:(${telegramUuid})$`,
+  "i",
+);
+
 export type TelegramFeatureInput = Readonly<{
   callbackData?: string;
   messageText?: string;

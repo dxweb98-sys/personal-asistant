@@ -15,6 +15,8 @@ import { Feature, isFeatureActive } from "../../config/features.js";
 import {
   requiredFeatureForTelegramInput,
   telegramComingSoonMessage,
+  telegramDebtDetailAction,
+  telegramDebtPaymentAction,
 } from "./telegram-feature-access.js";
 
 let bot: Telegraf | null = null;
@@ -1217,23 +1219,7 @@ Mata uang yang umum digunakan adalah ${countryCurrency[country]}. Kamu dapat men
     await sendSettings(ctx);
   });
 
-  bot.action(/^debt:(.+)$/, async (ctx: any) => {
-    await ctx.answerCbQuery();
-    const u = await userFor(ctx);
-    const d: any = await debtService.find(u.id, ctx.match[1]);
-    const paid = Number(d.originalPrincipal) - Number(d.remainingPrincipal);
-    await ctx.reply(
-      `💳 <b>${html(d.name)}</b>\n\n🏢 ${html(d.creditor)}\n📉 Sisa: <b>${html(currency(Number(d.remainingPrincipal), d.currency ?? "IDR"))}</b>\n${html(progress(paid, Number(d.originalPrincipal)))}\n🏷️ ${html(d.status)}`,
-      {
-        parse_mode: "HTML",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("💸 Catat Pembayaran", `debt:pay:${d.id}`)],
-          [Markup.button.callback("🏠 Beranda", "menu:home")],
-        ]),
-      },
-    );
-  });
-  bot.action(/^debt:pay:(.+)$/, async (ctx: any) => {
+  bot.action(telegramDebtPaymentAction, async (ctx: any) => {
     await ctx.answerCbQuery();
     const u = await userFor(ctx);
     const d: any = await debtService.find(u.id, ctx.match[1]);
@@ -1246,6 +1232,22 @@ Mata uang yang umum digunakan adalah ${countryCurrency[country]}. Kamu dapat men
       `Masukkan nominal pembayaran untuk <b>${html(d.name)}</b>:`,
       {
         parse_mode: "HTML",
+      },
+    );
+  });
+  bot.action(telegramDebtDetailAction, async (ctx: any) => {
+    await ctx.answerCbQuery();
+    const u = await userFor(ctx);
+    const d: any = await debtService.find(u.id, ctx.match[1]);
+    const paid = Number(d.originalPrincipal) - Number(d.remainingPrincipal);
+    await ctx.reply(
+      `💳 <b>${html(d.name)}</b>\n\n🏢 ${html(d.creditor)}\n📉 Sisa: <b>${html(currency(Number(d.remainingPrincipal), d.currency ?? "IDR"))}</b>\n${html(progress(paid, Number(d.originalPrincipal)))}\n🏷️ ${html(d.status)}`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("💸 Catat Pembayaran", `debt:pay:${d.id}`)],
+          [Markup.button.callback("🏠 Beranda", "menu:home")],
+        ]),
       },
     );
   });

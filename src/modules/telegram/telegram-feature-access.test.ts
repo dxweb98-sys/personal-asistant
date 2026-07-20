@@ -3,6 +3,8 @@ import { Feature } from "../../config/features.js";
 import {
   isTelegramInputBlocked,
   requiredFeatureForTelegramInput,
+  telegramDebtDetailAction,
+  telegramDebtPaymentAction,
 } from "./telegram-feature-access.js";
 
 describe("Telegram feature access", () => {
@@ -42,5 +44,21 @@ describe("Telegram feature access", () => {
       expect(requiredFeatureForTelegramInput({ callbackData })).toBeNull();
       expect(isTelegramInputBlocked({ callbackData })).toBe(false);
     }
+  });
+
+  it("routes debt payment callbacks without matching the debt detail action", () => {
+    const debtId = "1aca3c38-df7e-4bba-a020-a08946d8234d";
+    const callbackData = `debt:pay:${debtId}`;
+
+    expect(telegramDebtPaymentAction.exec(callbackData)?.[1]).toBe(debtId);
+    expect(telegramDebtDetailAction.test(callbackData)).toBe(false);
+  });
+
+  it("accepts only a UUID in the debt detail action", () => {
+    const debtId = "1aca3c38-df7e-4bba-a020-a08946d8234d";
+
+    expect(telegramDebtDetailAction.exec(`debt:${debtId}`)?.[1]).toBe(debtId);
+    expect(telegramDebtDetailAction.test("debt:pay:not-a-uuid")).toBe(false);
+    expect(telegramDebtDetailAction.test("debt:not-a-uuid")).toBe(false);
   });
 });
