@@ -1,4 +1,5 @@
 import { z } from "zod";
+
 export const platformSchema = z.object({
   name: z.string().min(2),
   type: z.enum([
@@ -10,10 +11,11 @@ export const platformSchema = z.object({
     "MARKETPLACE",
     "OTHER",
   ]),
-  accountReference: z.string().optional(),
-  website: z.string().url().optional(),
-  notes: z.string().optional(),
+  accountReference: z.string().nullable().default(null),
+  website: z.string().url().nullable().default(null),
+  notes: z.string().nullable().default(null),
 });
+
 export const instrumentSchema = z.object({
   type: z.enum([
     "STOCK",
@@ -27,9 +29,9 @@ export const instrumentSchema = z.object({
   symbol: z
     .string()
     .min(1)
-    .transform((v) => v.toUpperCase()),
+    .transform((value) => value.toUpperCase()),
   name: z.string().min(2),
-  exchange: z.string().optional(),
+  exchange: z.string().nullable().default(null),
   currency: z.string().default("IDR"),
   unitName: z.string().default("unit"),
   unitsPerLot: z.coerce.number().positive().default(1),
@@ -38,6 +40,7 @@ export const instrumentSchema = z.object({
     .default("MEDIUM"),
   staleAfterHours: z.coerce.number().int().positive().default(24),
 });
+
 export const tradeSchema = z.object({
   instrumentId: z.string().uuid(),
   accountId: z.string().uuid(),
@@ -51,6 +54,7 @@ export const tradeSchema = z.object({
   tradedAt: z.coerce.date().optional(),
   notes: z.string().optional(),
 });
+
 export const priceSchema = z.object({
   instrumentId: z.string().uuid(),
   price: z.coerce.number().positive(),
@@ -58,6 +62,7 @@ export const priceSchema = z.object({
   source: z.enum(["MANUAL", "API", "IMPORT"]).default("MANUAL"),
   capturedAt: z.coerce.date().optional(),
 });
+
 export const dividendSchema = z.object({
   instrumentId: z.string().uuid(),
   accountId: z.string().uuid(),

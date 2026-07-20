@@ -4,7 +4,7 @@ import { prisma } from "./lib/prisma.js";
 import {
   startTelegramBot,
   stopTelegramBot,
-} from "./modules/telegram/telegram.v2.bot.js";
+} from "./modules/telegram/telegram.bot.js";
 import { migrateLegacyTelegramProfiles } from "./modules/telegram/telegram-profile-migration.service.js";
 
 const server = app.listen(env.PORT, () =>
